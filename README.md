@@ -1,6 +1,6 @@
 # Persistent Memory for Java
 
-##Background
+## Background
 
 Persistent memory brings the ability to use byte addressable persistent storage in our programs.
 This means using CPU load/store instructions, not block I/O read/write methods, to operate on persistent data.
@@ -37,7 +37,7 @@ But we do still have some overhead, since now we have to make JNI calls to the C
 So now Java programmers have a choice: Stick with the pure Java approach and take the hit of a syscall, or go with PMDK and suffer the overhead of JNI.
 That's Bad or Less Bad, but what we want is Good...
 
-##Making Improvements
+## Making Improvements
 
 What if the JVM itself was able to natively handle Persistent Memory?
 Can't we have a smart `MappedByteBuffer` that knows it can implement `force()` as a cheap cache flush when the backing storage is DAX,
@@ -72,7 +72,7 @@ To do this we need one more API change:
 The `msync` call actually already works this way, it's just not been exposed to Java because the O/S storage block cache will generally do the right thing anyhow, ignoring blocks that are not dirty.
 But the `pmem_persist` approach is so much more efficient that the overhead of using an unnecessarily large range becomes much more noticeable.
 
-##Show me the numbers
+## Show me the numbers
 
 Let's take a simple micro-benchmark that appends a few million records to a log.
 
@@ -94,7 +94,7 @@ Wow! That doesn't look quite right. We've gone from noticeable overhead to actua
 The JVM's JIT must be going a really good job, though using a simpler algorithm for the log management helps too.
 The most important point though, is that we're now running a lot more efficiently than we can with JNI.
 
-##But wait, there is more!
+## But wait, there is more!
 
 There is one more thing we can do to streamline this. Because the `pmem_persist` call essentially just issues a set of CPU cache management instructions,
 we can teach the JIT to replace it with generated code, using a compiler intrinsic. That allows the JDK runtime to be even more aggressive in its optimizations.
@@ -111,7 +111,7 @@ Oh yeah. Now that's Good.
 
 
 
-##Try it yourself.
+## Try it yourself.
 
 You can try out the prototype yourself. It needs a bit of setup though. These instructions assume Fedora x86_64.
 YMMV in other environments - it will be cross-platform eventually, but not yet. 
