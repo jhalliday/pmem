@@ -1,5 +1,5 @@
---- old/src/hotspot/cpu/x86/assembler_x86.cpp	2018-05-18 11:35:42.480398493 +0100
-+++ new/src/hotspot/cpu/x86/assembler_x86.cpp	2018-05-18 11:35:42.237397252 +0100
+--- old/src/hotspot/cpu/x86/assembler_x86.cpp	2018-05-22 15:37:18.444228393 +0100
++++ new/src/hotspot/cpu/x86/assembler_x86.cpp	2018-05-22 15:37:18.167226716 +0100
 @@ -8249,6 +8249,34 @@
    emit_operand(rdi, adr);
  }
@@ -35,8 +35,8 @@
  void Assembler::cmovq(Condition cc, Register dst, Register src) {
    int encode = prefixq_and_encode(dst->encoding(), src->encoding());
    emit_int8(0x0F);
---- old/src/hotspot/cpu/x86/assembler_x86.hpp	2018-05-18 11:35:43.086401589 +0100
-+++ new/src/hotspot/cpu/x86/assembler_x86.hpp	2018-05-18 11:35:42.843400347 +0100
+--- old/src/hotspot/cpu/x86/assembler_x86.hpp	2018-05-22 15:37:19.040232001 +0100
++++ new/src/hotspot/cpu/x86/assembler_x86.hpp	2018-05-22 15:37:18.796230524 +0100
 @@ -982,6 +982,8 @@
    void cld();
  
@@ -46,8 +46,8 @@
  
    void cmovl(Condition cc, Register dst, Register src);
    void cmovl(Condition cc, Register dst, Address src);
---- old/src/hotspot/cpu/x86/macroAssembler_x86.cpp	2018-05-18 11:35:43.621404322 +0100
-+++ new/src/hotspot/cpu/x86/macroAssembler_x86.cpp	2018-05-18 11:35:43.367403024 +0100
+--- old/src/hotspot/cpu/x86/macroAssembler_x86.cpp	2018-05-22 15:37:19.572235221 +0100
++++ new/src/hotspot/cpu/x86/macroAssembler_x86.cpp	2018-05-22 15:37:19.326233732 +0100
 @@ -10931,6 +10931,45 @@
    bind(done);
  }
@@ -94,8 +94,8 @@
  Assembler::Condition MacroAssembler::negate_condition(Assembler::Condition cond) {
    switch (cond) {
      // Note some conditions are synonyms for others
---- old/src/hotspot/cpu/x86/macroAssembler_x86.hpp	2018-05-18 11:35:44.276407668 +0100
-+++ new/src/hotspot/cpu/x86/macroAssembler_x86.hpp	2018-05-18 11:35:44.031406416 +0100
+--- old/src/hotspot/cpu/x86/macroAssembler_x86.hpp	2018-05-22 15:37:20.184238926 +0100
++++ new/src/hotspot/cpu/x86/macroAssembler_x86.hpp	2018-05-22 15:37:19.922237340 +0100
 @@ -1729,6 +1729,8 @@
    void byte_array_inflate(Register src, Register dst, Register len,
                            XMMRegister tmp1, Register tmp2);
@@ -105,8 +105,8 @@
  };
  
  /**
---- old/src/hotspot/cpu/x86/vm_version_x86.hpp	2018-05-18 11:35:44.913410922 +0100
-+++ new/src/hotspot/cpu/x86/vm_version_x86.hpp	2018-05-18 11:35:44.596409303 +0100
+--- old/src/hotspot/cpu/x86/vm_version_x86.hpp	2018-05-22 15:37:20.714242135 +0100
++++ new/src/hotspot/cpu/x86/vm_version_x86.hpp	2018-05-22 15:37:20.471240663 +0100
 @@ -218,7 +218,10 @@
                 avx512dq : 1,
                          : 1,
@@ -181,13 +181,13 @@
  };
  
  #endif // CPU_X86_VM_VM_VERSION_X86_HPP
---- old/src/hotspot/cpu/x86/x86_64.ad	2018-05-18 11:35:45.501413926 +0100
-+++ new/src/hotspot/cpu/x86/x86_64.ad	2018-05-18 11:35:45.225412516 +0100
+--- old/src/hotspot/cpu/x86/x86_64.ad	2018-05-22 15:37:21.238245306 +0100
++++ new/src/hotspot/cpu/x86/x86_64.ad	2018-05-22 15:37:20.984243769 +0100
 @@ -6092,6 +6092,21 @@
    ins_pipe(pipe_slow); // XXX
  %}
  
-+instruct cacheSync(memory addr, rRegL len, rRegL tmp, rFlagsReg cr)
++instruct cacheSync(indirect addr, rRegL len, rRegL tmp, rFlagsReg cr)
 +%{
 +  match(CacheSync addr len);
 +
@@ -205,8 +205,8 @@
  //----------BSWAP Instructions-------------------------------------------------
  instruct bytes_reverse_int(rRegI dst) %{
    match(Set dst (ReverseBytesI dst));
---- old/src/hotspot/share/adlc/formssel.cpp	2018-05-18 11:35:46.122417099 +0100
-+++ new/src/hotspot/share/adlc/formssel.cpp	2018-05-18 11:35:45.874415831 +0100
+--- old/src/hotspot/share/adlc/formssel.cpp	2018-05-22 15:37:21.930249496 +0100
++++ new/src/hotspot/share/adlc/formssel.cpp	2018-05-22 15:37:21.663247879 +0100
 @@ -3513,6 +3513,8 @@
    int cnt = sizeof(needs_ideal_memory_list)/sizeof(char*);
    if( strcmp(_opType,"PrefetchAllocation")==0 )
@@ -216,8 +216,8 @@
    if( _lChild ) {
      const char *opType = _lChild->_opType;
      for( int i=0; i<cnt; i++ )
---- old/src/hotspot/share/classfile/vmSymbols.hpp	2018-05-18 11:35:46.674419918 +0100
-+++ new/src/hotspot/share/classfile/vmSymbols.hpp	2018-05-18 11:35:46.406418549 +0100
+--- old/src/hotspot/share/classfile/vmSymbols.hpp	2018-05-22 15:37:22.525253097 +0100
++++ new/src/hotspot/share/classfile/vmSymbols.hpp	2018-05-22 15:37:22.241251378 +0100
 @@ -1347,6 +1347,10 @@
     do_name(     getAndSetObject_name,                                   "getAndSetObject")                                    \
     do_signature(getAndSetObject_signature,                              "(Ljava/lang/Object;JLjava/lang/Object;)Ljava/lang/Object;" ) \
@@ -238,8 +238,8 @@
      FIRST_MH_SIG_POLY    = _invokeGeneric,
      FIRST_MH_STATIC      = _linkToVirtual,
      LAST_MH_SIG_POLY     = _linkToInterface,
---- old/src/hotspot/share/opto/c2compiler.cpp	2018-05-18 11:35:47.306423147 +0100
-+++ new/src/hotspot/share/opto/c2compiler.cpp	2018-05-18 11:35:47.046421819 +0100
+--- old/src/hotspot/share/opto/c2compiler.cpp	2018-05-22 15:37:23.165256972 +0100
++++ new/src/hotspot/share/opto/c2compiler.cpp	2018-05-22 15:37:22.899255361 +0100
 @@ -594,6 +594,10 @@
    case vmIntrinsics::_isCompileConstant:
    case vmIntrinsics::_Preconditions_checkIndex:
@@ -251,8 +251,8 @@
    default:
      return false;
    }
---- old/src/hotspot/share/opto/classes.hpp	2018-05-18 11:35:47.836425855 +0100
-+++ new/src/hotspot/share/opto/classes.hpp	2018-05-18 11:35:47.587424583 +0100
+--- old/src/hotspot/share/opto/classes.hpp	2018-05-22 15:37:23.810260876 +0100
++++ new/src/hotspot/share/opto/classes.hpp	2018-05-22 15:37:23.537259224 +0100
 @@ -48,6 +48,7 @@
  macro(ReverseBytesUS)
  macro(ReverseBytesS)
@@ -261,8 +261,8 @@
  macro(CallDynamicJava)
  macro(CallJava)
  macro(CallLeaf)
---- old/src/hotspot/share/opto/library_call.cpp	2018-05-18 11:35:48.396428716 +0100
-+++ new/src/hotspot/share/opto/library_call.cpp	2018-05-18 11:35:48.141427413 +0100
+--- old/src/hotspot/share/opto/library_call.cpp	2018-05-22 15:37:24.339264079 +0100
++++ new/src/hotspot/share/opto/library_call.cpp	2018-05-22 15:37:24.080262510 +0100
 @@ -326,6 +326,7 @@
    bool inline_montgomerySquare();
    bool inline_vectorizedMismatch();
@@ -303,8 +303,8 @@
 +  set_memory(flush, TypeRawPtr::BOTTOM);
 +  return true;
 +}
---- old/src/hotspot/share/opto/memnode.hpp	2018-05-18 11:35:49.012431862 +0100
-+++ new/src/hotspot/share/opto/memnode.hpp	2018-05-18 11:35:48.740430473 +0100
+--- old/src/hotspot/share/opto/memnode.hpp	2018-05-22 15:37:24.957267819 +0100
++++ new/src/hotspot/share/opto/memnode.hpp	2018-05-22 15:37:24.697266246 +0100
 @@ -1605,4 +1605,15 @@
    virtual const Type *bottom_type() const { return ( AllocatePrefetchStyle == 3 ) ? Type::MEMORY : Type::ABIO; }
  };
@@ -321,8 +321,8 @@
 +};
 +
  #endif // SHARE_VM_OPTO_MEMNODE_HPP
---- old/src/java.base/share/classes/java/nio/Direct-X-Buffer.java.template	2018-05-18 11:35:49.556434641 +0100
-+++ new/src/java.base/share/classes/java/nio/Direct-X-Buffer.java.template	2018-05-18 11:35:49.302433344 +0100
+--- old/src/java.base/share/classes/java/nio/Direct-X-Buffer.java.template	2018-05-22 15:37:25.520271228 +0100
++++ new/src/java.base/share/classes/java/nio/Direct-X-Buffer.java.template	2018-05-22 15:37:25.260269654 +0100
 @@ -167,15 +167,15 @@
      //
      protected Direct$Type$Buffer$RW$(int cap, long addr,
@@ -342,8 +342,8 @@
          this.isReadOnly = true;
  #end[rw]
      }
---- old/src/java.base/share/classes/java/nio/MappedByteBuffer.java	2018-05-18 11:35:50.089437364 +0100
-+++ new/src/java.base/share/classes/java/nio/MappedByteBuffer.java	2018-05-18 11:35:49.816435970 +0100
+--- old/src/java.base/share/classes/java/nio/MappedByteBuffer.java	2018-05-22 15:37:26.049274430 +0100
++++ new/src/java.base/share/classes/java/nio/MappedByteBuffer.java	2018-05-22 15:37:25.788272850 +0100
 @@ -28,7 +28,7 @@
  import java.io.FileDescriptor;
  import java.lang.ref.Reference;
@@ -477,8 +477,8 @@
  
      // -- Covariant return type overrides
  
---- old/src/java.base/share/classes/sun/nio/ch/FileChannelImpl.java	2018-05-18 11:35:50.595439949 +0100
-+++ new/src/java.base/share/classes/sun/nio/ch/FileChannelImpl.java	2018-05-18 11:35:50.343438662 +0100
+--- old/src/java.base/share/classes/sun/nio/ch/FileChannelImpl.java	2018-05-22 15:37:26.569277578 +0100
++++ new/src/java.base/share/classes/sun/nio/ch/FileChannelImpl.java	2018-05-22 15:37:26.323276088 +0100
 @@ -932,7 +932,11 @@
      private static final int MAP_RW = 1;
      private static final int MAP_PV = 2;
@@ -548,8 +548,8 @@
          throws IOException;
  
      // Removes an existing mapping
---- old/src/java.base/share/classes/sun/nio/ch/Util.java	2018-05-18 11:35:51.138442723 +0100
-+++ new/src/java.base/share/classes/sun/nio/ch/Util.java	2018-05-18 11:35:50.879441400 +0100
+--- old/src/java.base/share/classes/sun/nio/ch/Util.java	2018-05-22 15:37:27.126280950 +0100
++++ new/src/java.base/share/classes/sun/nio/ch/Util.java	2018-05-22 15:37:26.846279255 +0100
 @@ -408,7 +408,8 @@
                              new Class<?>[] { int.class,
                                               long.class,
@@ -610,8 +610,8 @@
          } catch (InstantiationException |
                   IllegalAccessException |
                   InvocationTargetException e) {
---- old/src/java.base/unix/native/libnio/MappedByteBuffer.c	2018-05-18 11:35:51.677445477 +0100
-+++ new/src/java.base/unix/native/libnio/MappedByteBuffer.c	2018-05-18 11:35:51.432444225 +0100
+--- old/src/java.base/unix/native/libnio/MappedByteBuffer.c	2018-05-22 15:37:27.648284110 +0100
++++ new/src/java.base/unix/native/libnio/MappedByteBuffer.c	2018-05-22 15:37:27.396282584 +0100
 @@ -33,6 +33,8 @@
  #include <stddef.h>
  #include <stdlib.h>
@@ -667,8 +667,8 @@
      }
  }
 +
---- old/src/java.base/unix/native/libnio/ch/FileChannelImpl.c	2018-05-18 11:35:52.180448046 +0100
-+++ new/src/java.base/unix/native/libnio/ch/FileChannelImpl.c	2018-05-18 11:35:51.935446795 +0100
+--- old/src/java.base/unix/native/libnio/ch/FileChannelImpl.c	2018-05-22 15:37:28.148287136 +0100
++++ new/src/java.base/unix/native/libnio/ch/FileChannelImpl.c	2018-05-22 15:37:27.896285611 +0100
 @@ -47,6 +47,8 @@
  #include "nio_util.h"
  #include "sun_nio_ch_FileChannelImpl.h"
@@ -749,8 +749,8 @@
      return ((jlong) (unsigned long) mapAddress);
  }
  
---- /dev/null	2018-05-10 08:46:08.277910066 +0100
-+++ new/src/java.base/unix/native/libnio/pmem/cpu.c	2018-05-18 11:35:52.435449349 +0100
+--- /dev/null	2018-05-21 11:33:33.061752063 +0100
++++ new/src/java.base/unix/native/libnio/pmem/cpu.c	2018-05-22 15:37:28.399288656 +0100
 @@ -0,0 +1,180 @@
 +/*
 + * Copyright 2015-2017, Intel Corporation
@@ -932,8 +932,8 @@
 +
 +	return ret;
 +}
---- /dev/null	2018-05-10 08:46:08.277910066 +0100
-+++ new/src/java.base/unix/native/libnio/pmem/cpu.h	2018-05-18 11:35:52.948451970 +0100
+--- /dev/null	2018-05-21 11:33:33.061752063 +0100
++++ new/src/java.base/unix/native/libnio/pmem/cpu.h	2018-05-22 15:37:28.939291924 +0100
 @@ -0,0 +1,45 @@
 +/*
 + * Copyright 2016-2017, Intel Corporation
@@ -980,8 +980,8 @@
 +int is_cpu_clwb_present(void);
 +
 +#endif
---- /dev/null	2018-05-10 08:46:08.277910066 +0100
-+++ new/src/java.base/unix/native/libnio/pmem/jdk_pmem.h	2018-05-18 11:35:53.454454555 +0100
+--- /dev/null	2018-05-21 11:33:33.061752063 +0100
++++ new/src/java.base/unix/native/libnio/pmem/jdk_pmem.h	2018-05-22 15:37:29.475295169 +0100
 @@ -0,0 +1,52 @@
 +
 +void pmem_init(void);
@@ -1035,8 +1035,8 @@
 +#define FATAL(...)\
 +	OUT_FATAL_ABORT(__FILE__, __LINE__, __func__, __VA_ARGS__)
 +
---- /dev/null	2018-05-10 08:46:08.277910066 +0100
-+++ new/src/java.base/unix/native/libnio/pmem/out.c	2018-05-18 11:35:53.953457104 +0100
+--- /dev/null	2018-05-21 11:33:33.061752063 +0100
++++ new/src/java.base/unix/native/libnio/pmem/out.c	2018-05-22 15:37:29.983298244 +0100
 @@ -0,0 +1,17 @@
 +#include <stdarg.h>
 +#include <stdio.h>
@@ -1055,8 +1055,8 @@
 +	printf("\n");
 +
 +}
---- /dev/null	2018-05-10 08:46:08.277910066 +0100
-+++ new/src/java.base/unix/native/libnio/pmem/pmem.c	2018-05-18 11:35:54.452459653 +0100
+--- /dev/null	2018-05-21 11:33:33.061752063 +0100
++++ new/src/java.base/unix/native/libnio/pmem/pmem.c	2018-05-22 15:37:30.641302228 +0100
 @@ -0,0 +1,639 @@
 +/*
 + * Copyright 2014-2018, Intel Corporation
