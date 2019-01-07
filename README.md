@@ -135,9 +135,10 @@ make
 - Build the benchmark against the new JDK. The `PmemLogJDKImpl` code won't compile against a regular JDK, since it uses the new API.
 
 ```
-export JAVA_HOME=/path/to/jdk/build/linux-x86_64-normal-server-release/jdk
+export JAVA_HOME=/path/to/jdk/build/linux-x86_64-server-release/jdk
 export PATH=$JAVA_HOME/bin:$PATH
 javac --add-exports java.base/sun.nio.ch=ALL-UNNAMED *.java
+export LD_LIBRARY_PATH=.
 ```
 
 - Build the JNI code too, so you can run the `PMemLogJNI` version of the benchmark:
@@ -171,7 +172,7 @@ chown -R you:you /mnt/pmem/test/
 
 Note that the JIT compiler intrinsic is enabled by default. To run without it
 
-`export NO_FORCE_MAPSYNC_INTRINSIC=1`
+`export DISABLE_UNSAFE_WRITEBACK_INTRINSIC=1`
 
 You can change the `Driver.java` source to use the different implementations for comparison.
 

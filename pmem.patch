@@ -1,43 +1,224 @@
---- old/src/hotspot/cpu/x86/assembler_x86.cpp	2018-05-22 15:37:18.444228393 +0100
-+++ new/src/hotspot/cpu/x86/assembler_x86.cpp	2018-05-22 15:37:18.167226716 +0100
-@@ -8249,6 +8249,34 @@
-   emit_operand(rdi, adr);
+--- old/src/hotspot/cpu/aarch64/aarch64.ad	2018-08-20 11:53:22.166380268 +0100
++++ new/src/hotspot/cpu/aarch64/aarch64.ad	2018-08-20 11:53:21.867379377 +0100
+@@ -8925,6 +8925,44 @@
+ 
+ //  ---------------- end of volatile loads and stores ----------------
+ 
++instruct cacheWB(indirect addr)
++%{
++  match(CacheWB addr);
++
++  ins_cost(100);
++  format %{"cache wb $addr" %}
++  ins_encode %{
++    assert($addr->index_position() < 0, "should be");
++    assert($addr$$disp == 0, "should be");
++    __ cache_wb(Address($addr$$base$$Register, 0));
++  %}
++  ins_pipe(pipe_slow); // XXX
++%}
++
++instruct cacheWBPreSync()
++%{
++  match(CacheWBPreSync);
++
++  ins_cost(100);
++  format %{"cache wb presync" %}
++  ins_encode %{
++    __ cache_wbsync(true);
++  %}
++  ins_pipe(pipe_slow); // XXX
++%}
++
++instruct cacheWBPostSync()
++%{
++  match(CacheWBPostSync);
++
++  ins_cost(100);
++  format %{"cache wb postsync" %}
++  ins_encode %{
++    __ cache_wbsync(false);
++  %}
++  ins_pipe(pipe_slow); // XXX
++%}
++
+ // ============================================================================
+ // BSWAP Instructions
+ 
+--- old/src/hotspot/cpu/aarch64/macroAssembler_aarch64.cpp	2018-08-20 11:53:23.378383879 +0100
++++ new/src/hotspot/cpu/aarch64/macroAssembler_aarch64.cpp	2018-08-20 11:53:23.085383006 +0100
+@@ -5820,3 +5820,21 @@
+ 
+   pop(saved_regs, sp);
+ }
++
++void MacroAssembler::cache_wb(Address line)
++{
++  assert(line.getMode() == Address::base_plus_offset, "mode should be base_plus_offset");
++  assert(line.index() == noreg, "index should be noreg");
++  assert(line.offset() == 0, "offset should be 0");
++  // would like to assert this
++  // assert(line._ext.shift == 0, "shift should be zero");
++  dc(Assembler::CVAC, line.base());
++}
++
++void MacroAssembler::cache_wbsync(bool is_pre)
++{
++  // we only need a barrier post sync
++  if (!is_pre) {
++    membar(Assembler::AnyAny);
++  }
++}
+--- old/src/hotspot/cpu/aarch64/macroAssembler_aarch64.hpp	2018-08-20 11:53:24.454387084 +0100
++++ new/src/hotspot/cpu/aarch64/macroAssembler_aarch64.hpp	2018-08-20 11:53:24.160386208 +0100
+@@ -1356,6 +1356,9 @@
+       spill(tmp1, true, dst_offset+8);
+     }
+   }
++
++  void cache_wb(Address line);
++  void cache_wbsync(bool is_pre);
+ };
+ 
+ #ifdef ASSERT
+--- old/src/hotspot/cpu/aarch64/stubGenerator_aarch64.cpp	2018-08-20 11:53:25.483390150 +0100
++++ new/src/hotspot/cpu/aarch64/stubGenerator_aarch64.cpp	2018-08-20 11:53:25.202389313 +0100
+@@ -2365,6 +2365,44 @@
+     return start;
+   }
+ 
++  address generate_data_cache_writeback() {
++    const Register line        = c_rarg0;  // address of line to write back
++
++    __ align(CodeEntryAlignment);
++
++    StubCodeMark mark(this, "StubRoutines", "_data_cache_writeback");
++
++    address start = __ pc();
++    __ enter();
++    __ cache_wb(Address(line, 0));
++    __ leave();
++    __ ret(lr);
++
++    return start;
++  }
++
++  address generate_data_cache_writeback_sync() {
++    const Register is_pre     = c_rarg0;  // pre or post sync
++
++    __ align(CodeEntryAlignment);
++
++    StubCodeMark mark(this, "StubRoutines", "_data_cache_writeback_sync");
++
++    // pre wbsync is a no-op
++    // post wbsync translates to an sfence
++
++    Label skip;
++    address start = __ pc();
++    __ enter();
++    __ cbnz(is_pre, skip);
++    __ cache_wbsync(false);
++    __ bind(skip);
++    __ leave();
++    __ ret(lr);
++
++    return start;
++  }
++
+   void generate_arraycopy_stubs() {
+     address entry;
+     address entry_jbyte_arraycopy;
+@@ -5824,6 +5862,10 @@
+       StubRoutines::_ghash_processBlocks = generate_ghash_processBlocks();
+     }
+ 
++    // data cache line writeback
++    StubRoutines::_data_cache_writeback = generate_data_cache_writeback();
++    StubRoutines::_data_cache_writeback_sync = generate_data_cache_writeback_sync();
++    
+     if (UseAESIntrinsics) {
+       StubRoutines::_aescrypt_encryptBlock = generate_aescrypt_encryptBlock();
+       StubRoutines::_aescrypt_decryptBlock = generate_aescrypt_decryptBlock();
+--- old/src/hotspot/cpu/aarch64/vm_version_aarch64.cpp	2018-08-20 11:53:26.321392646 +0100
++++ new/src/hotspot/cpu/aarch64/vm_version_aarch64.cpp	2018-08-20 11:53:26.029391776 +0100
+@@ -129,6 +129,9 @@
+ 
+   int dcache_line = VM_Version::dcache_line_size();
+ 
++  // publish data cache line flush size via generic field
++  _data_cache_line_flush_size = dcache_line;
++
+   if (FLAG_IS_DEFAULT(AllocatePrefetchDistance))
+     FLAG_SET_DEFAULT(AllocatePrefetchDistance, 3*dcache_line);
+   if (FLAG_IS_DEFAULT(AllocatePrefetchStepSize))
+--- old/src/hotspot/cpu/x86/assembler_x86.cpp	2018-08-20 11:53:26.869394279 +0100
++++ new/src/hotspot/cpu/x86/assembler_x86.cpp	2018-08-20 11:53:26.588393442 +0100
+@@ -2192,6 +2192,14 @@
+   emit_int8((unsigned char)0xF0);
  }
  
-+void Assembler::clflushopt(Address adr) {
-+  // adr should be base reg only with no index or offset
-+  assert(adr.index() == noreg, "index should be noreg");
-+  assert(adr.scale() == Address::no_scale, "scale should be no_scale");
-+  assert(adr.disp() == 0, "displacement should be 0");
-+  // prefix is 0x66
-+  emit_int8(0x66);
-+  // opcode family is 0x0f 0xAE
++// Emit sfence instruction
++void Assembler::sfence() {
++  NOT_LP64(assert(VM_Version::supports_sse2(), "unsupported");)
 +  emit_int8(0x0F);
 +  emit_int8((unsigned char)0xAE);
-+  // extended opcode byte is 7 == rdi
++  emit_int8((unsigned char)0xF8);
++}
++
+ void Assembler::mov(Register dst, Register src) {
+   LP64_ONLY(movq(dst, src)) NOT_LP64(movl(dst, src));
+ }
+@@ -8426,12 +8434,47 @@
+ }
+ 
+ void Assembler::clflush(Address adr) {
++  assert(VM_Version::supports_clflush(), "should do");
++  prefix(adr);
++  emit_int8(0x0F);
++  emit_int8((unsigned char)0xAE);
 +  emit_operand(rdi, adr);
 +}
 +
-+void Assembler::clwb(Address adr) {
++#ifdef _LP64
++void Assembler::clflushopt(Address adr) {
++  assert(VM_Version::supports_clflushopt(), "should do!");
 +  // adr should be base reg only with no index or offset
 +  assert(adr.index() == noreg, "index should be noreg");
 +  assert(adr.scale() == Address::no_scale, "scale should be no_scale");
 +  assert(adr.disp() == 0, "displacement should be 0");
-+  // prefix is 0x66
++  // instruction prefix is 0x66
 +  emit_int8(0x66);
+   prefix(adr);
++  // opcode family is 0x0f 0xAE
+   emit_int8(0x0F);
+   emit_int8((unsigned char)0xAE);
++  // extended opcode byte is 7 == rdi
+   emit_operand(rdi, adr);
+ }
+ 
++void Assembler::clwb(Address adr) {
++  assert(VM_Version::supports_clwb(), "should do!");
++  // adr should be base reg only with no index or offset
++  assert(adr.index() == noreg, "index should be noreg");
++  assert(adr.scale() == Address::no_scale, "scale should be no_scale");
++  assert(adr.disp() == 0, "displacement should be 0");
++  // instruction prefix is 0x66
++  emit_int8(0x66);
++  prefix(adr);
 +  // opcode family is 0x0f 0xAE
 +  emit_int8(0x0F);
 +  emit_int8((unsigned char)0xAE);
 +  // extended opcode byte is 6 == rsi
 +  emit_operand(rsi, adr);
 +}
++#endif
 +
  void Assembler::cmovq(Condition cc, Register dst, Register src) {
    int encode = prefixq_and_encode(dst->encoding(), src->encoding());
    emit_int8(0x0F);
---- old/src/hotspot/cpu/x86/assembler_x86.hpp	2018-05-22 15:37:19.040232001 +0100
-+++ new/src/hotspot/cpu/x86/assembler_x86.hpp	2018-05-22 15:37:18.796230524 +0100
-@@ -982,6 +982,8 @@
+--- old/src/hotspot/cpu/x86/assembler_x86.hpp	2018-08-20 11:53:27.746396891 +0100
++++ new/src/hotspot/cpu/x86/assembler_x86.hpp	2018-08-20 11:53:27.453396018 +0100
+@@ -1019,6 +1019,8 @@
    void cld();
  
    void clflush(Address adr);
@@ -46,32 +227,29 @@
  
    void cmovl(Condition cc, Register dst, Register src);
    void cmovl(Condition cc, Register dst, Address src);
---- old/src/hotspot/cpu/x86/macroAssembler_x86.cpp	2018-05-22 15:37:19.572235221 +0100
-+++ new/src/hotspot/cpu/x86/macroAssembler_x86.cpp	2018-05-22 15:37:19.326233732 +0100
-@@ -10931,6 +10931,45 @@
+@@ -1380,6 +1382,7 @@
+   }
+ 
+   void mfence();
++  void sfence();
+ 
+   // Moves
+ 
+--- old/src/hotspot/cpu/x86/macroAssembler_x86.cpp	2018-08-20 11:53:28.788399995 +0100
++++ new/src/hotspot/cpu/x86/macroAssembler_x86.cpp	2018-08-20 11:53:28.503399146 +0100
+@@ -10946,6 +10946,44 @@
    bind(done);
  }
  
-+void MacroAssembler::cache_sync(Register addr, Register len, Register tmp)
++void MacroAssembler::cache_wb(Address line)
 +{
 +  // 64 bit cpus always support clflush
 +  assert(VM_Version::supports_clflush(), "should not reach here on 32-bit");
 +  bool optimized = VM_Version::supports_clflushopt();
 +  bool no_evict = VM_Version::supports_clwb();
-+  Label loop, done;
-+  Address line(addr, 0);
-+  int mask = ~(DEFAULT_CACHE_LINE_SIZE - 1);
 +
-+  // end addr is addr + ;len
-+  movptr(tmp, addr);
-+  addptr(tmp, len);
-+  // round addr down to beginning of cache line
-+  andptr(addr, mask);
-+  // uncomment to insert a gdb breakpoint
-+  // emit_int8(0xCC);
-+  bind(loop);
-+  cmpq(addr, tmp);
-+  jcc(Assembler::greaterEqual, done);
++  // pick the correct implementation
++
 +  if (optimized) {
 +    if (no_evict) {
 +      clwb(line);
@@ -82,31 +260,116 @@
 +    // no need for fence when using CLFLUSH
 +    clflush(line);
 +  }    
-+  addptr(addr, DEFAULT_CACHE_LINE_SIZE);
-+  jmp(loop);
-+  bind(done);
-+  if (optimized || no_evict) {
-+    // should be sfence()
-+    mfence();
++}
++
++
++void MacroAssembler::cache_wbsync(bool is_pre)
++{
++  assert(VM_Version::supports_clflush(), "should not reach here on 32-bit");
++  bool optimized = VM_Version::supports_clflushopt();
++  bool no_evict = VM_Version::supports_clwb();
++
++  // pick the correct implementation
++
++  if (!is_pre && (optimized || no_evict)) {
++    // need an sfence for post flush when using clflushopt or clwb
++    // otherwise no no need for any synchroniaztion
++
++    sfence();
 +  }
 +}
 +
  Assembler::Condition MacroAssembler::negate_condition(Assembler::Condition cond) {
    switch (cond) {
      // Note some conditions are synonyms for others
---- old/src/hotspot/cpu/x86/macroAssembler_x86.hpp	2018-05-22 15:37:20.184238926 +0100
-+++ new/src/hotspot/cpu/x86/macroAssembler_x86.hpp	2018-05-22 15:37:19.922237340 +0100
-@@ -1729,6 +1729,8 @@
+--- old/src/hotspot/cpu/x86/macroAssembler_x86.hpp	2018-08-20 11:53:29.920403368 +0100
++++ new/src/hotspot/cpu/x86/macroAssembler_x86.hpp	2018-08-20 11:53:29.634402516 +0100
+@@ -1743,6 +1743,8 @@
    void byte_array_inflate(Register src, Register dst, Register len,
                            XMMRegister tmp1, Register tmp2);
  
-+  // writeback an address range to (persistent) storage
-+  void cache_sync(Register addr, Register len, Register tmp);
++  void cache_wb(Address line);
++  void cache_wbsync(bool isPre);
  };
  
  /**
---- old/src/hotspot/cpu/x86/vm_version_x86.hpp	2018-05-22 15:37:20.714242135 +0100
-+++ new/src/hotspot/cpu/x86/vm_version_x86.hpp	2018-05-22 15:37:20.471240663 +0100
+--- old/src/hotspot/cpu/x86/stubGenerator_x86_64.cpp	2018-08-20 11:53:30.720405751 +0100
++++ new/src/hotspot/cpu/x86/stubGenerator_x86_64.cpp	2018-08-20 11:53:30.437404908 +0100
+@@ -2785,6 +2785,49 @@
+     return start;
+   }
+ 
++  address generate_data_cache_writeback() {
++    bool optimized = VM_Version::supports_clflushopt();
++    bool no_evict = VM_Version::supports_clwb();
++
++    const Register src        = c_rarg0;  // source address
++
++    __ align(CodeEntryAlignment);
++
++    StubCodeMark mark(this, "StubRoutines", "_data_cache_writeback");
++
++    address start = __ pc();
++    __ enter();
++    const Address line(src, 0);
++    __ cache_wb(line);
++    __ leave();
++    __ ret(0);
++
++    return start;    
++  }
++
++  address generate_data_cache_writeback_sync() {
++    const Register is_pre    = c_rarg0;  // pre or post sync
++
++    __ align(CodeEntryAlignment);
++
++    StubCodeMark mark(this, "StubRoutines", "_data_cache_writeback_sync");
++
++    // pre wbsync is a no-op
++    // post wbsync translates to an sfence
++
++    Label skip;
++    address start = __ pc();
++    __ enter();
++    __ cmpl(is_pre, 0);
++    __ jcc(Assembler::notEqual, skip); 
++    __ cache_wbsync(false);
++    __ bind(skip);
++    __ leave();
++    __ ret(0);
++
++    return start;
++  }
++
+   void generate_arraycopy_stubs() {
+     address entry;
+     address entry_jbyte_arraycopy;
+@@ -5777,6 +5820,10 @@
+     // support for verify_oop (must happen after universe_init)
+     StubRoutines::_verify_oop_subroutine_entry = generate_verify_oop();
+ 
++    // data cache line writeback
++    StubRoutines::_data_cache_writeback = generate_data_cache_writeback();
++    StubRoutines::_data_cache_writeback_sync = generate_data_cache_writeback_sync();
++    
+     // arraycopy stubs used by compilers
+     generate_arraycopy_stubs();
+ 
+--- old/src/hotspot/cpu/x86/vm_version_x86.cpp	2018-08-20 11:53:31.336407586 +0100
++++ new/src/hotspot/cpu/x86/vm_version_x86.cpp	2018-08-20 11:53:31.052406740 +0100
+@@ -609,6 +609,9 @@
+   guarantee(_cpuid_info.std_cpuid1_ebx.bits.clflush_size == 8, "such clflush size is not supported");
+ #endif
+ 
++  // publish data cache line flush size to generic field
++  _data_cache_line_flush_size = _cpuid_info.std_cpuid1_ebx.bits.clflush_size * 8;
++
+   // If the OS doesn't support SSE, we can't use this feature even if the HW does
+   if (!os::supports_sse())
+     _features &= ~(CPU_SSE|CPU_SSE2|CPU_SSE3|CPU_SSSE3|CPU_SSE4A|CPU_SSE4_1|CPU_SSE4_2);
+--- old/src/hotspot/cpu/x86/vm_version_x86.hpp	2018-08-20 11:53:31.910409296 +0100
++++ new/src/hotspot/cpu/x86/vm_version_x86.hpp	2018-08-20 11:53:31.618408426 +0100
 @@ -218,7 +218,10 @@
                 avx512dq : 1,
                          : 1,
@@ -119,18 +382,19 @@
                 avx512pf : 1,
                 avx512er : 1,
                 avx512cd : 1,
-@@ -335,7 +338,9 @@
- #define CPU_VZEROUPPER ((uint64_t)UCONST64(0x1000000000))       // Vzeroupper instruction
- #define CPU_AVX512_VPOPCNTDQ ((uint64_t)UCONST64(0x2000000000)) // Vector popcount
+@@ -337,7 +340,10 @@
  #define CPU_VPCLMULQDQ ((uint64_t)UCONST64(0x4000000000)) //Vector carryless multiplication
--
-+#define CPU_FLUSHOPT ((uint64_t)UCONST64(0x8000000000)) // flushopt instruction
-+#define CPU_CLWB ((uint64_t)UCONST64(0x10000000000)) // clwb instruction
-+ 
-   enum Extended_Family {
+ #define CPU_VAES ((uint64_t)UCONST64(0x8000000000))    // Vector AES instructions
+ 
+-  enum Extended_Family {
++#define CPU_FLUSHOPT ((uint64_t)UCONST64(0x10000000000)) // flushopt instruction
++#define CPU_CLWB ((uint64_t)UCONST64(0x20000000000)) // clwb instruction
++
++enum Extended_Family {
      // AMD
      CPU_FAMILY_AMD_11H       = 0x11,
-@@ -569,6 +574,8 @@
+     // ZX
+@@ -572,6 +578,8 @@
        result |= CPU_SHA;
      if (_cpuid_info.std_cpuid1_ecx.bits.fma != 0)
        result |= CPU_FMA;
@@ -139,65 +403,89 @@
  
      // AMD features.
      if (is_amd()) {
-@@ -588,6 +595,9 @@
+@@ -591,6 +599,9 @@
        if (_cpuid_info.ext_cpuid1_ecx.bits.misalignsse != 0) {
          result |= CPU_3DNOW_PREFETCH;
        }
-+      if (_cpuid_info.sef_cpuid7_ebx.bits.clflushopt != 0) {
++      if (_cpuid_info.sef_cpuid7_ebx.bits.clwb != 0) {
 +        result |= CPU_CLWB;
 +      }
      }
  
      // ZX features.
-@@ -921,6 +931,31 @@
+@@ -925,6 +936,32 @@
    // that can be used for efficient implementation of
    // the intrinsic for java.lang.Thread.onSpinWait()
    static bool supports_on_spin_wait() { return supports_sse2(); }
 +
 +  // there are several insns to force cache line sync to memory which
-+  // we can use to ensure mapped persistent memory is up todate with
++  // we can use to ensure mapped persistent memory is up to date with
 +  // pending in-cache changes.
 +  //
 +  // 64 bit cpus always support clflush which writes back and evicts
 +  //
 +  // clflushopt is optional and acts like clflush except it does
 +  // not synchronize with other memory ops. it needs a preceding
-+  // and trailing fence
++  // and trailing StoreStore fence
 +  //
-+  // clwb is optional writes back without evicting the line. it also
-+  // does not synchronize with other memory ops. so, it also needs a
-+  // preceding and trailing fence.
-+  
++  // clwb is an optional, intel-specific instruction optional which
++  // writes back without evicting the line. it also does not
++  // synchronize with other memory ops. so, it also needs a preceding
++  // and trailing StoreStore fence.
++
 +#ifdef _LP64
 +  static bool supports_clflush() { return true; }
-+  static bool supports_clflushopt() { return (_features & CPU_FLUSHOPT == 0); }
-+  static bool supports_clwb() { return (_features & CPU_CLWB == 0); }
++  static bool supports_clflushopt() { return ((_features & CPU_FLUSHOPT) != 0); }
++  static bool supports_clwb() { return ((_features & CPU_CLWB) != 0); }
 +#else
 +  static bool supports_clflush() { return true; }
 +  static bool supports_clflushopt() { return false; }
 +  static bool supports_clwb() { return false; }
 +#endif // _LP64
-+  
++
  };
  
  #endif // CPU_X86_VM_VM_VERSION_X86_HPP
---- old/src/hotspot/cpu/x86/x86_64.ad	2018-05-22 15:37:21.238245306 +0100
-+++ new/src/hotspot/cpu/x86/x86_64.ad	2018-05-22 15:37:20.984243769 +0100
-@@ -6092,6 +6092,21 @@
+--- old/src/hotspot/cpu/x86/x86_64.ad	2018-08-20 11:53:32.474410976 +0100
++++ new/src/hotspot/cpu/x86/x86_64.ad	2018-08-20 11:53:32.190410130 +0100
+@@ -6237,6 +6237,44 @@
    ins_pipe(pipe_slow); // XXX
  %}
  
-+instruct cacheSync(indirect addr, rRegL len, rRegL tmp, rFlagsReg cr)
++instruct cacheWB(indirect addr)
 +%{
-+  match(CacheSync addr len);
++  match(CacheWB addr);
 +
-+  effect(USE len, TEMP tmp, KILL cr);
 +  ins_cost(100);
-+  format %{"cache sync $addr, $len" %}
++  format %{"cache wb $addr" %}
 +  ins_encode %{
 +    assert($addr->index_position() < 0, "should be");
 +    assert($addr$$disp == 0, "should be");
-+    __ cache_sync($addr$$base$$Register, $len$$Register, $tmp$$Register);
++    __ cache_wb(Address($addr$$base$$Register, 0));
++  %}
++  ins_pipe(pipe_slow); // XXX
++%}
++
++instruct cacheWBPreSync()
++%{
++  match(CacheWBPreSync);
++
++  ins_cost(100);
++  format %{"cache wb presync" %}
++  ins_encode %{
++    __ cache_wbsync(true);
++  %}
++  ins_pipe(pipe_slow); // XXX
++%}
++
++instruct cacheWBPostSync()
++%{
++  match(CacheWBPostSync);
++
++  ins_cost(100);
++  format %{"cache wb postsync" %}
++  ins_encode %{
++    __ cache_wbsync(false);
 +  %}
 +  ins_pipe(pipe_slow); // XXX
 +%}
@@ -205,213 +493,489 @@
  //----------BSWAP Instructions-------------------------------------------------
  instruct bytes_reverse_int(rRegI dst) %{
    match(Set dst (ReverseBytesI dst));
---- old/src/hotspot/share/adlc/formssel.cpp	2018-05-22 15:37:21.930249496 +0100
-+++ new/src/hotspot/share/adlc/formssel.cpp	2018-05-22 15:37:21.663247879 +0100
-@@ -3513,6 +3513,8 @@
+--- old/src/hotspot/share/adlc/formssel.cpp	2018-08-20 11:53:33.361413619 +0100
++++ new/src/hotspot/share/adlc/formssel.cpp	2018-08-20 11:53:33.077412773 +0100
+@@ -3517,6 +3517,12 @@
    int cnt = sizeof(needs_ideal_memory_list)/sizeof(char*);
    if( strcmp(_opType,"PrefetchAllocation")==0 )
      return 1;
-+  if( strcmp(_opType,"CacheSync")==0 )
++  if( strcmp(_opType,"CacheWB")==0 )
++    return 1;
++  if( strcmp(_opType,"CacheWBPreSync")==0 )
++    return 1;
++  if( strcmp(_opType,"CacheWBPostSync")==0 )
 +    return 1;
    if( _lChild ) {
      const char *opType = _lChild->_opType;
      for( int i=0; i<cnt; i++ )
---- old/src/hotspot/share/classfile/vmSymbols.hpp	2018-05-22 15:37:22.525253097 +0100
-+++ new/src/hotspot/share/classfile/vmSymbols.hpp	2018-05-22 15:37:22.241251378 +0100
-@@ -1347,6 +1347,10 @@
-    do_name(     getAndSetObject_name,                                   "getAndSetObject")                                    \
-    do_signature(getAndSetObject_signature,                              "(Ljava/lang/Object;JLjava/lang/Object;)Ljava/lang/Object;" ) \
-                                                                                                                                \
-+  do_class(java_nio_MappedByteBuffer,                                    "java/nio/MappedByteBuffer")                          \
-+   do_name(     force0_mapsync_name,                                    "force0_mapsync")                                        \
-+  do_intrinsic(_force0_mapsync, java_nio_MappedByteBuffer, force0_mapsync_name, long_long_void_signature, F_RN)  \
-+                                                                                                                               \
-    /* (2) Bytecode intrinsics                                                                        */                        \
-                                                                                                                                \
-   do_intrinsic(_park,                     jdk_internal_misc_Unsafe,     park_name, park_signature,                     F_R)    \
-@@ -1532,7 +1536,7 @@
-     #undef VM_INTRINSIC_ENUM
- 
-     ID_LIMIT,
--    LAST_COMPILER_INLINE = _getAndSetObject,
-+    LAST_COMPILER_INLINE = _force0_mapsync,
-     FIRST_MH_SIG_POLY    = _invokeGeneric,
-     FIRST_MH_STATIC      = _linkToVirtual,
-     LAST_MH_SIG_POLY     = _linkToInterface,
---- old/src/hotspot/share/opto/c2compiler.cpp	2018-05-22 15:37:23.165256972 +0100
-+++ new/src/hotspot/share/opto/c2compiler.cpp	2018-05-22 15:37:22.899255361 +0100
-@@ -594,6 +594,10 @@
-   case vmIntrinsics::_isCompileConstant:
-   case vmIntrinsics::_Preconditions_checkIndex:
-     break;
-+  case vmIntrinsics::_force0_mapsync:
-+    if (getenv("NO_FORCE_MAPSYNC_INTRINSIC")) { return false; }
-+    if (!Matcher::match_rule_supported(Op_CacheSync)) return false;
+--- old/src/hotspot/share/classfile/vmSymbols.hpp	2018-08-20 11:53:34.410416744 +0100
++++ new/src/hotspot/share/classfile/vmSymbols.hpp	2018-08-20 11:53:34.123415889 +0100
+@@ -469,6 +469,7 @@
+   template(long_int_signature,                        "(J)I")                                     \
+   template(long_long_signature,                       "(J)J")                                     \
+   template(long_double_signature,                     "(J)D")                                     \
++  template(long_void_signature,                       "(J)V")                                     \
+   template(byte_signature,                            "B")                                        \
+   template(char_signature,                            "C")                                        \
+   template(double_signature,                          "D")                                        \
+@@ -1056,6 +1057,12 @@
+   /* support for Unsafe */                                                                                              \
+   do_class(jdk_internal_misc_Unsafe,               "jdk/internal/misc/Unsafe")                                          \
+                                                                                                                         \
++  do_intrinsic(_writeback0,               jdk_internal_misc_Unsafe,     writeback0_name, long_void_signature , F_RN)             \
++   do_name(     writeback0_name,                                        "writeback0")                                            \
++  do_intrinsic(_writebackPreSync0,        jdk_internal_misc_Unsafe,     writebackPreSync0_name, void_method_signature , F_RN)    \
++   do_name(     writebackPreSync0_name,                                        "writebackPreSync0")                              \
++  do_intrinsic(_writebackPostSync0,        jdk_internal_misc_Unsafe,     writebackPostSync0_name, void_method_signature , F_RN)   \
++   do_name(     writebackPostSync0_name,                                        "writebackPostSync0")                            \
+   do_intrinsic(_allocateInstance,         jdk_internal_misc_Unsafe,     allocateInstance_name, allocateInstance_signature, F_RN) \
+    do_name(     allocateInstance_name,                                  "allocateInstance")                                      \
+    do_signature(allocateInstance_signature,                             "(Ljava/lang/Class;)Ljava/lang/Object;")                 \
+--- old/src/hotspot/share/opto/c2compiler.cpp	2018-08-20 11:53:35.252419252 +0100
++++ new/src/hotspot/share/opto/c2compiler.cpp	2018-08-20 11:53:34.962418388 +0100
+@@ -547,6 +547,12 @@
+ #endif
+   case vmIntrinsics::_currentTimeMillis:
+   case vmIntrinsics::_nanoTime:
 +    break;
-   default:
-     return false;
-   }
---- old/src/hotspot/share/opto/classes.hpp	2018-05-22 15:37:23.810260876 +0100
-+++ new/src/hotspot/share/opto/classes.hpp	2018-05-22 15:37:23.537259224 +0100
-@@ -48,6 +48,7 @@
++  case vmIntrinsics::_writeback0:
++  case vmIntrinsics::_writebackPreSync0:
++  case vmIntrinsics::_writebackPostSync0:
++    if (getenv("DISABLE_UNSAFE_WRITEBACK_INTRINSIC")) return false;
++    break;
+   case vmIntrinsics::_allocateInstance:
+   case vmIntrinsics::_allocateUninitializedArray:
+   case vmIntrinsics::_newArray:
+--- old/src/hotspot/share/opto/classes.hpp	2018-08-20 11:53:35.811420918 +0100
++++ new/src/hotspot/share/opto/classes.hpp	2018-08-20 11:53:35.519420048 +0100
+@@ -50,6 +50,9 @@
  macro(ReverseBytesUS)
  macro(ReverseBytesS)
  macro(CProj)
-+macro(CacheSync)
++macro(CacheWB)
++macro(CacheWBPreSync)
++macro(CacheWBPostSync)
  macro(CallDynamicJava)
  macro(CallJava)
  macro(CallLeaf)
---- old/src/hotspot/share/opto/library_call.cpp	2018-05-22 15:37:24.339264079 +0100
-+++ new/src/hotspot/share/opto/library_call.cpp	2018-05-22 15:37:24.080262510 +0100
-@@ -326,6 +326,7 @@
-   bool inline_montgomerySquare();
-   bool inline_vectorizedMismatch();
-   bool inline_fma(vmIntrinsics::ID id);
-+  bool inline_native_MappedByteBuffer_force0_mapsync();
+--- old/src/hotspot/share/opto/library_call.cpp	2018-08-20 11:53:36.614423310 +0100
++++ new/src/hotspot/share/opto/library_call.cpp	2018-08-20 11:53:36.321422437 +0100
+@@ -252,6 +252,8 @@
+   static bool klass_needs_init_guard(Node* kls);
+   bool inline_unsafe_allocate();
+   bool inline_unsafe_newArray(bool uninitialized);
++  bool inline_unsafe_writeback0();
++  bool inline_unsafe_writebackSync0(bool isPre);
+   bool inline_unsafe_copyMemory();
+   bool inline_native_currentThread();
  
-   bool inline_profileBoolean();
-   bool inline_isCompileConstant();
-@@ -870,6 +871,9 @@
-   case vmIntrinsics::_fmaF:
-     return inline_fma(intrinsic_id());
- 
-+  case vmIntrinsics::_force0_mapsync:
-+    return inline_native_MappedByteBuffer_force0_mapsync();
-+    
-   default:
-     // If you get here, it may be that someone has added a new intrinsic
-     // to the list in vmSymbols.hpp without implementing it here.
-@@ -6999,3 +7003,21 @@
-   set_result(n->is_Con() ? intcon(1) : intcon(0));
-   return true;
+@@ -750,6 +752,9 @@
+ #endif
+   case vmIntrinsics::_currentTimeMillis:        return inline_native_time_funcs(CAST_FROM_FN_PTR(address, os::javaTimeMillis), "currentTimeMillis");
+   case vmIntrinsics::_nanoTime:                 return inline_native_time_funcs(CAST_FROM_FN_PTR(address, os::javaTimeNanos), "nanoTime");
++  case vmIntrinsics::_writeback0:               return inline_unsafe_writeback0();
++  case vmIntrinsics::_writebackPreSync0:        return inline_unsafe_writebackSync0(true);
++  case vmIntrinsics::_writebackPostSync0:       return inline_unsafe_writebackSync0(false);
+   case vmIntrinsics::_allocateInstance:         return inline_unsafe_allocate();
+   case vmIntrinsics::_copyMemory:               return inline_unsafe_copyMemory();
+   case vmIntrinsics::_getLength:                return inline_native_getLength();
+@@ -2754,6 +2759,55 @@
+   return !ik->is_initialized();
  }
-+
-+//-------------inline_native_MappedByteBuffer_force0_mapsync-----------------------------------
-+bool LibraryCallKit::inline_native_MappedByteBuffer_force0_mapsync() {
+ 
++//----------------------------inline_unsafe_writeback0-------------------------
++// public native void Unsafe.writeback0(long address)
++bool LibraryCallKit::inline_unsafe_writeback0() {
++  if (!Matcher::has_match_rule(Op_CacheWB)) {
++    return false;
++  }
 +#ifndef PRODUCT
++  assert(Matcher::has_match_rule(Op_CacheWBPreSync), "found match rule for CacheWB but not CacheWBPreSync");
++  assert(Matcher::has_match_rule(Op_CacheWBPostSync), "found match rule for CacheWB but not CacheWBPostSync");
 +  ciSignature* sig = callee()->signature();
-+  assert(sig->type_at(0)->basic_type() == T_LONG, "force0_mapsync address is long");
-+  assert(sig->type_at(1)->basic_type() == T_LONG, "force0_mapsync length is long");
++  assert(sig->type_at(0)->basic_type() == T_LONG, "Unsafe_writeback0 address is long!");
 +#endif
 +  null_check_receiver();  // null-check, then ignore
 +  Node *addr = argument(1);
 +  addr = new CastX2PNode(addr);
 +  addr = _gvn.transform(addr);
-+  Node *len = argument(3);
-+  Node *flush = new CacheSyncNode(control(), memory(TypeRawPtr::BOTTOM), addr, len);
++  Node *flush = new CacheWBNode(control(), memory(TypeRawPtr::BOTTOM), addr);
 +  flush = _gvn.transform(flush);
 +  set_memory(flush, TypeRawPtr::BOTTOM);
 +  return true;
 +}
---- old/src/hotspot/share/opto/memnode.hpp	2018-05-22 15:37:24.957267819 +0100
-+++ new/src/hotspot/share/opto/memnode.hpp	2018-05-22 15:37:24.697266246 +0100
-@@ -1605,4 +1605,15 @@
++
++//----------------------------inline_unsafe_writeback0-------------------------
++// public native void Unsafe.writeback0(long address)
++bool LibraryCallKit::inline_unsafe_writebackSync0(bool isPre) {
++  if (isPre && !Matcher::has_match_rule(Op_CacheWBPreSync)) {
++    return false;
++  }
++  if (!isPre && !Matcher::has_match_rule(Op_CacheWBPostSync)) {
++    return false;
++  }
++#ifndef PRODUCT
++  assert(Matcher::has_match_rule(Op_CacheWB),
++         (isPre ? "found match rule for CacheWBPreSync but not CacheWB"
++                : "found match rule for CacheWBPostSync but not CacheWB"));
++
++#endif
++  null_check_receiver();  // null-check, then ignore
++  Node *sync;
++  if (isPre) {
++    sync = new CacheWBPreSyncNode(control(), memory(TypeRawPtr::BOTTOM));
++  } else {
++    sync = new CacheWBPostSyncNode(control(), memory(TypeRawPtr::BOTTOM));
++  }
++  sync = _gvn.transform(sync);
++  set_memory(sync, TypeRawPtr::BOTTOM);
++  return true;
++}
++
+ //----------------------------inline_unsafe_allocate---------------------------
+ // public native Object Unsafe.allocateInstance(Class<?> cls);
+ bool LibraryCallKit::inline_unsafe_allocate() {
+--- old/src/hotspot/share/opto/memnode.hpp	2018-08-20 11:53:37.708426569 +0100
++++ new/src/hotspot/share/opto/memnode.hpp	2018-08-20 11:53:37.418425705 +0100
+@@ -1605,4 +1605,40 @@
    virtual const Type *bottom_type() const { return ( AllocatePrefetchStyle == 3 ) ? Type::MEMORY : Type::ABIO; }
  };
  
-+// cache sync node for guaranteeing writeback of an address range to
-+// (persistent) storage
-+class CacheSyncNode : public Node {
++// cachewb node for guaranteeing writeback of the cache line at a
++// given address to (persistent) storage
++class CacheWBNode : public Node {
 +public:
-+  CacheSyncNode(Node *ctrl, Node *mem, Node *addr, Node *len) : Node(ctrl, mem, addr, len) {}
++  CacheWBNode(Node *ctrl, Node *mem, Node *addr) : Node(ctrl, mem, addr) {}
 +  virtual int Opcode() const;
 +  virtual uint ideal_reg() const { return NotAMachineReg; }
-+  virtual uint match_edge(uint idx) const { return (idx == 2 || idx == 3); }
++  virtual uint match_edge(uint idx) const { return (idx == 2); }
++  virtual const TypePtr *adr_type() const { return TypeRawPtr::BOTTOM; }
++  virtual const Type *bottom_type() const { return Type::MEMORY; }
++};
++
++// cachewb pre sync node for ensuring that writebacks are serialised
++// relative to preceding or following stores
++class CacheWBPreSyncNode : public Node {
++public:
++  CacheWBPreSyncNode(Node *ctrl, Node *mem) : Node(ctrl, mem) {}
++  virtual int Opcode() const;
++  virtual uint ideal_reg() const { return NotAMachineReg; }
++  virtual uint match_edge(uint idx) const { return false; }
++  virtual const TypePtr *adr_type() const { return TypeRawPtr::BOTTOM; }
++  virtual const Type *bottom_type() const { return Type::MEMORY; }
++};
++
++// cachewb pre sync node for ensuring that writebacks are serialised
++// relative to preceding or following stores
++class CacheWBPostSyncNode : public Node {
++public:
++  CacheWBPostSyncNode(Node *ctrl, Node *mem) : Node(ctrl, mem) {}
++  virtual int Opcode() const;
++  virtual uint ideal_reg() const { return NotAMachineReg; }
++  virtual uint match_edge(uint idx) const { return false; }
++  virtual const TypePtr *adr_type() const { return TypeRawPtr::BOTTOM; }
 +  virtual const Type *bottom_type() const { return Type::MEMORY; }
 +};
 +
  #endif // SHARE_VM_OPTO_MEMNODE_HPP
---- old/src/java.base/share/classes/java/nio/Direct-X-Buffer.java.template	2018-05-22 15:37:25.520271228 +0100
-+++ new/src/java.base/share/classes/java/nio/Direct-X-Buffer.java.template	2018-05-22 15:37:25.260269654 +0100
-@@ -167,15 +167,15 @@
+--- old/src/hotspot/share/prims/unsafe.cpp	2018-08-20 11:53:38.508428952 +0100
++++ new/src/hotspot/share/prims/unsafe.cpp	2018-08-20 11:53:38.225428109 +0100
+@@ -42,6 +42,7 @@
+ #include "runtime/jniHandles.inline.hpp"
+ #include "runtime/orderAccess.hpp"
+ #include "runtime/reflection.hpp"
++#include "runtime/sharedRuntime.hpp"
+ #include "runtime/thread.hpp"
+ #include "runtime/threadSMR.hpp"
+ #include "runtime/vm_version.hpp"
+@@ -442,6 +443,74 @@
+   }
+ } UNSAFE_END
+ 
++UNSAFE_LEAF (void, Unsafe_WriteBack0(JNIEnv *env, jobject unsafe, jlong line)) {
++#ifndef PRODUCT
++  if (TraceMemoryWriteback) {
++    tty->print_cr("Unsafe: writeback 0x%p", addr_from_java(line));
++  }
++#endif
++
++  // guard against currently unimplemented cases
++#if !defined(LINUX) || !(defined(AARCH64) || defined(AMD64))
++  // TODO - implement for solaris/AIX/BSD/WINDOWS and for 32 bit
++  JNU_ThrowRuntimeException(env, "writeback is not implemented");
++  return IOS_THROWN;
++#else
++  void (*wb)(void *);
++  void *a = addr_from_java(line);
++  wb = (void (*)(void *)) StubRoutines::data_cache_writeback();
++  assert(wb != NULL, "generate writeback stub!");
++  (*wb)(a);
++#endif
++} UNSAFE_END
++
++static void doWriteBackSync0(bool isPre)
++{
++  void (*wbsync)(int);
++  wbsync = (void (*)(int)) StubRoutines::data_cache_writeback_sync();
++  assert(wbsync != NULL, "generate writeback sync stub!");
++  (*wbsync)(isPre);
++}
++
++UNSAFE_LEAF (void, Unsafe_WriteBackPreSync0(JNIEnv *env, jobject unsafe)) {
++#ifndef PRODUCT
++  if (TraceMemoryWriteback) {
++      tty->print_cr("Unsafe: writeback pre-sync");
++  }
++#endif
++#if !defined(LINUX) || !(defined(AARCH64) || defined(AMD64))
++  // TODO - implement for solaris/AIX/BSD/WINDOWS and for 32 bit
++  JNU_ThrowRuntimeException(env, "writeback sync is not implemented");
++  return IOS_THROWN;
++#else
++  doWriteBackSync0(true);
++#endif
++} UNSAFE_END
++
++UNSAFE_LEAF (void, Unsafe_WriteBackPostSync0(JNIEnv *env, jobject unsafe)) {
++#ifndef PRODUCT
++  if (TraceMemoryWriteback) {
++    tty->print_cr("Unsafe: writeback pre-sync");
++  }
++#endif
++#if !defined(LINUX) || !(defined(AARCH64) || defined(AMD64))
++  // TODO - implement for solaris/AIX/BSD/WINDOWS and for 32 bit
++  JNU_ThrowRuntimeException(env, "writeback sync is not implemented");
++  return IOS_THROWN;
++#else
++  doWriteBackSync0(false);
++#endif
++} UNSAFE_END
++
++UNSAFE_LEAF(jint, Unsafe_DataCacheLineFlushSize0()) {
++  jint size = (jint)VM_Version::data_cache_line_flush_size();
++  // TODO -- ensure every CPU actually sets this
++  if (size == 0) {
++    size = (jint)DEFAULT_CACHE_LINE_SIZE;
++  }
++  return size;
++} UNSAFE_END
++
+ ////// Random queries
+ 
+ UNSAFE_LEAF(jint, Unsafe_AddressSize0(JNIEnv *env, jobject unsafe)) {
+@@ -1061,6 +1130,7 @@
+     {CC "ensureClassInitialized0", CC "(" CLS ")V",      FN_PTR(Unsafe_EnsureClassInitialized0)},
+     {CC "arrayBaseOffset0",   CC "(" CLS ")I",           FN_PTR(Unsafe_ArrayBaseOffset0)},
+     {CC "arrayIndexScale0",   CC "(" CLS ")I",           FN_PTR(Unsafe_ArrayIndexScale0)},
++    {CC "dataCacheLineFlushSize0", CC "()I",             FN_PTR(Unsafe_DataCacheLineFlushSize0)},
+     {CC "addressSize0",       CC "()I",                  FN_PTR(Unsafe_AddressSize0)},
+     {CC "pageSize",           CC "()I",                  FN_PTR(Unsafe_PageSize)},
+ 
+@@ -1081,6 +1151,9 @@
+ 
+     {CC "copyMemory0",        CC "(" OBJ "J" OBJ "JJ)V", FN_PTR(Unsafe_CopyMemory0)},
+     {CC "copySwapMemory0",    CC "(" OBJ "J" OBJ "JJJ)V", FN_PTR(Unsafe_CopySwapMemory0)},
++    {CC "writeback0",         CC "(" "J" ")V",           FN_PTR(Unsafe_WriteBack0)},
++    {CC "writebackPreSync0",     CC "()V",               FN_PTR(Unsafe_WriteBackPreSync0)},
++    {CC "writebackPostSync0",     CC "()V",              FN_PTR(Unsafe_WriteBackPostSync0)},
+     {CC "setMemory0",         CC "(" OBJ "JJB)V",        FN_PTR(Unsafe_SetMemory0)},
+ 
+     {CC "defineAnonymousClass0", CC "(" DAC_Args ")" CLS, FN_PTR(Unsafe_DefineAnonymousClass0)},
+--- old/src/hotspot/share/runtime/globals.hpp	2018-08-20 11:53:39.313431350 +0100
++++ new/src/hotspot/share/runtime/globals.hpp	2018-08-20 11:53:39.018430472 +0100
+@@ -2617,6 +2617,9 @@
+   experimental(bool, UseSwitchProfiling, true,                              \
+           "leverage profiling for table/lookup switch")                     \
+                                                                             \
++  notproduct(bool, TraceMemoryWriteback, false,                             \
++          "Trace memory writeback operations")                              \
++                                                                            \
+   JFR_ONLY(product(bool, FlightRecorder, false,                             \
+           "Enable Flight Recorder"))                                        \
+                                                                             \
+--- old/src/hotspot/share/runtime/stubRoutines.cpp	2018-08-20 11:53:40.130433784 +0100
++++ new/src/hotspot/share/runtime/stubRoutines.cpp	2018-08-20 11:53:39.846432938 +0100
+@@ -109,6 +109,9 @@
+ 
+ address StubRoutines::_zero_aligned_words = CAST_FROM_FN_PTR(address, Copy::zero_to_words);
+ 
++address StubRoutines::_data_cache_writeback              = NULL;
++address StubRoutines::_data_cache_writeback_sync         = NULL;
++
+ address StubRoutines::_checkcast_arraycopy               = NULL;
+ address StubRoutines::_checkcast_arraycopy_uninit        = NULL;
+ address StubRoutines::_unsafe_arraycopy                  = NULL;
+--- old/src/hotspot/share/runtime/stubRoutines.hpp	2018-08-20 11:53:40.681435426 +0100
++++ new/src/hotspot/share/runtime/stubRoutines.hpp	2018-08-20 11:53:40.396434577 +0100
+@@ -151,6 +151,10 @@
+   static address _arrayof_jlong_disjoint_arraycopy;
+   static address _arrayof_oop_disjoint_arraycopy, _arrayof_oop_disjoint_arraycopy_uninit;
+ 
++  // cache line writeback
++  static address _data_cache_writeback;
++  static address _data_cache_writeback_sync;
++
+   // these are recommended but optional:
+   static address _checkcast_arraycopy, _checkcast_arraycopy_uninit;
+   static address _unsafe_arraycopy;
+@@ -329,6 +333,9 @@
+     return dest_uninitialized ? _arrayof_oop_disjoint_arraycopy_uninit : _arrayof_oop_disjoint_arraycopy;
+   }
+ 
++  static address data_cache_writeback() { return _data_cache_writeback; }
++  static address data_cache_writeback_sync() { return _data_cache_writeback_sync; }
++
+   static address checkcast_arraycopy(bool dest_uninitialized = false) {
+     return dest_uninitialized ? _checkcast_arraycopy_uninit : _checkcast_arraycopy;
+   }
+--- old/src/hotspot/share/runtime/vm_version.cpp	2018-08-20 11:53:41.268437175 +0100
++++ new/src/hotspot/share/runtime/vm_version.cpp	2018-08-20 11:53:40.980436317 +0100
+@@ -43,6 +43,7 @@
+ bool Abstract_VM_Version::_supports_atomic_getadd8 = false;
+ unsigned int Abstract_VM_Version::_logical_processors_per_package = 1U;
+ unsigned int Abstract_VM_Version::_L1_data_cache_line_size = 0;
++unsigned int Abstract_VM_Version::_data_cache_line_flush_size = 0;
+ 
+ #ifndef HOTSPOT_VERSION_STRING
+   #error HOTSPOT_VERSION_STRING must be defined
+--- old/src/hotspot/share/runtime/vm_version.hpp	2018-08-20 11:53:41.834438861 +0100
++++ new/src/hotspot/share/runtime/vm_version.hpp	2018-08-20 11:53:41.552438021 +0100
+@@ -58,6 +58,7 @@
+   static int          _vm_build_number;
+   static unsigned int _parallel_worker_threads;
+   static bool         _parallel_worker_threads_initialized;
++  static unsigned int _data_cache_line_flush_size;
+ 
+   static unsigned int nof_parallel_worker_threads(unsigned int num,
+                                                   unsigned int dem,
+@@ -139,6 +140,12 @@
+     return _L1_data_cache_line_size;
+   }
+ 
++  // the size in bytes of a data cache line flushed by a flush
++  // operation which should be a power of two
++  static unsigned int data_cache_line_flush_size() {
++    return _data_cache_line_flush_size;
++  }
++
+   // ARCH specific policy for the BiasedLocking
+   static bool use_biased_locking()  { return true; }
+ 
+--- old/src/java.base/share/classes/java/nio/Direct-X-Buffer.java.template	2018-08-20 11:53:42.625441217 +0100
++++ new/src/java.base/share/classes/java/nio/Direct-X-Buffer.java.template	2018-08-20 11:53:42.342440374 +0100
+@@ -167,15 +167,16 @@
      //
      protected Direct$Type$Buffer$RW$(int cap, long addr,
                                       FileDescriptor fd,
 -                                     Runnable unmapper)
-+                                     Runnable unmapper, boolean isMapSync)
++                                     Runnable unmapper,
++                                     boolean isPersistent)
      {
  #if[rw]
 -        super(-1, 0, cap, cap, fd);
-+        super(-1, 0, cap, cap, fd, isMapSync);
++        super(-1, 0, cap, cap, fd, isPersistent);
          address = addr;
          cleaner = Cleaner.create(this, unmapper);
          att = null;
  #else[rw]
 -        super(cap, addr, fd, unmapper);
-+        super(cap, addr, fd, unmapper, isMapSync);
++        super(cap, addr, fd, unmapper, isPersistent);
          this.isReadOnly = true;
  #end[rw]
      }
---- old/src/java.base/share/classes/java/nio/MappedByteBuffer.java	2018-05-22 15:37:26.049274430 +0100
-+++ new/src/java.base/share/classes/java/nio/MappedByteBuffer.java	2018-05-22 15:37:25.788272850 +0100
-@@ -28,7 +28,7 @@
- import java.io.FileDescriptor;
- import java.lang.ref.Reference;
- import jdk.internal.misc.Unsafe;
--
-+import jdk.internal.HotSpotIntrinsicCandidate;
- 
- /**
-  * A direct byte buffer whose content is a memory-mapped region of a file.
-@@ -67,6 +67,10 @@
- public abstract class MappedByteBuffer
-     extends ByteBuffer
- {
-+    private static native void registerNatives();
-+    static {
-+        registerNatives();
-+    }
- 
-     // This is a little bit backwards: By rights MappedByteBuffer should be a
-     // subclass of DirectByteBuffer, but to keep the spec clear and simple, and
-@@ -77,18 +81,30 @@
+--- old/src/java.base/share/classes/java/nio/MappedByteBuffer.java	2018-08-20 11:53:43.430443616 +0100
++++ new/src/java.base/share/classes/java/nio/MappedByteBuffer.java	2018-08-20 11:53:43.146442769 +0100
+@@ -77,18 +77,33 @@
      // operations if valid; null if the buffer is not mapped.
      private final FileDescriptor fd;
  
-+    private final boolean isMapSync;
-+
++    // A flag true if this buffer is mapped against persistent memory
++    // using one of the persistent FileChannel.MapMode modes,
++    // MapMode.READ_ONLY_PERSISTENT or MapMode.READ_WRITE_PERSISTENT
++    // and false if it is mapped using any of other modes. this flag
++    // only determines the behaviour of force operations.
++    private final boolean isPersistent;
++    
      // This should only be invoked by the DirectByteBuffer constructors
      //
      MappedByteBuffer(int mark, int pos, int lim, int cap, // package-private
-+                     FileDescriptor fd, boolean isMapSync)
-+    {
-+        super(mark, pos, lim, cap);
-+        this.fd = fd;
-+        this.isMapSync = isMapSync;
+-                     FileDescriptor fd)
+-    {
++                     FileDescriptor fd, boolean isPersistent) {
+         super(mark, pos, lim, cap);
+         this.fd = fd;
++        this.isPersistent = isPersistent;
 +    }
 +
 +    MappedByteBuffer(int mark, int pos, int lim, int cap, // package-private
-                      FileDescriptor fd)
-     {
-         super(mark, pos, lim, cap);
-         this.fd = fd;
-+        this.isMapSync = false;
++                     boolean isPersistent) {
++        super(mark, pos, lim, cap);
++        this.fd = null;
++        this.isPersistent = isPersistent;
      }
  
      MappedByteBuffer(int mark, int pos, int lim, int cap) { // package-private
          super(mark, pos, lim, cap);
          this.fd = null;
-+        this.isMapSync = false;
++        this.isPersistent = false;
      }
  
      // Returns the distance (in bytes) of the buffer from the page aligned address
-@@ -108,6 +124,15 @@
+@@ -108,6 +123,31 @@
      }
  
      /**
-+     * Returns the memory mapping type of this buffer.
++     * Tells whether this buffer was mapped against a non-volatile
++     * memory device by passing one of the persistent map modes {@link
++     * java.nio.channels.FileChannel.MapMode#READ_ONLY_PERSISTENT
++     * MapMode#READ_ONLY_PERSISTENT} or {@link
++     * java.nio.channels.FileChannel.MapMode#READ_ONLY_PERSISTENT
++     * MapMode#READ_WRITE_PERSISTENT} in the call to {@link
++     * java.nio.channels.FileChannel#map FileChannel.map} or mapped
++     * against some other form of device file by pasing one of the
++     * other map modes.
 +     *
-+     * @return true if mapped with MAP_SYNC, otherwise false.
++     * @return true if the file was mapped using against a
++     * non-volatile memory device by passing one of the persistent map
++     * modes {@link
++     * java.nio.channels.FileChannel.MapMode#READ_ONLY_PERSISTENT
++     * MapMode#READ_ONLY_PERSISTENT} or {@link
++     * java.nio.channels.FileChannel.MapMode#READ_ONLY_PERSISTENT
++     * MapMode#READ_WRITE_PERSISTENT} in the call to {@link
++     * java.nio.channels.FileChannel#map FileChannel.map} otherwise
++     * false.
 +     */
-+    public boolean isMapSync() {
-+        return isMapSync;
++    public boolean isPersistent() {
++        return isPersistent;
 +    }
-+
++    
 +    /**
       * Tells whether or not this buffer's content is resident in physical
       * memory.
       *
-@@ -202,12 +227,55 @@
+@@ -129,6 +169,10 @@
+         if (fd == null) {
+             return true;
+         }
++        // a persistent mapped buffer is always loaded
++        if (isPersistent()) {
++            return true;
++        }
+         if ((address == 0) || (capacity() == 0))
+             return true;
+         long offset = mappingOffset();
+@@ -153,6 +197,10 @@
+         if (fd == null) {
+             return this;
+         }
++        // no need to load a persistent mapped buffer
++        if (isPersistent()) {
++            return this;
++        }
+         if ((address == 0) || (capacity() == 0))
+             return this;
+         long offset = mappingOffset();
+@@ -202,12 +250,61 @@
       * @return  This buffer
       */
      public final MappedByteBuffer force() {
@@ -419,8 +983,8 @@
 +    }
 +
 +    /**
-+     * Forces any changes made to this buffer's content to be written to the
-+     * storage device containing the mapped file.
++     * Forces any changes made to some region of this buffer's content
++     * to be written to the storage device containing the mapped file.
 +     *
 +     * <p> If the file mapped into this buffer resides on a local storage
 +     * device then when this method returns it is guaranteed that all changes
@@ -434,123 +998,455 @@
 +     * java.nio.channels.FileChannel.MapMode#READ_WRITE}) then invoking this
 +     * method has no effect. </p>
 +     *
-+     * @param from the index of the start of the range to force
-+     * @param to the index of the end of the range to force (inclusive)
++     * @param from
++     *        The offset to the first byte in the buffer region that
++     *        is to be written back to storage
++     *
++     * @param to
++     *        The offset to the first byte beyond the buffer region
++     *        that is to be written back to storage
 +     *
 +     * @return  This buffer
++     *
++     * @since 12
 +     */
 +    public final MappedByteBuffer force(long from, long to) {
          if (fd == null) {
              return this;
          }
          if ((address != 0) && (capacity() != 0)) {
-+
-+            if(from < 0 || from > capacity()) {
++            // check inputs
++            if (from < 0 || from >= capacity()) {
 +                throw new IllegalArgumentException();
 +            }
-+            if(to < from || to < capacity()) {
++            if (to < from || to > capacity()) {
 +                throw new IllegalArgumentException();
 +            }
-+
++            
              long offset = mappingOffset();
 -            force0(fd, mappingAddress(offset), mappingLength(offset));
 +            long a = mappingAddress(offset) + from;
-+            long length = offset + to;
-+
-+            if(isMapSync) {
-+                // fastpath avoiding the syscall (and JNI)
-+                // System.out.println("fastpath"); // TODO remove me
-+                force0_mapsync(a, length);
++            long length = to - from;
++            if (isPersistent) {
++                // simply force writeback of associated cache lines
++                Unsafe unsafe = Unsafe.getUnsafe();
++                unsafe.writebackMemory(a, length);
 +            } else {
-+                // System.out.println("slowpath"); // TODO remove me
++                // writeback using device associated with fd
 +                force0(fd, a, length);
 +            }
          }
          return this;
      }
-@@ -215,6 +283,8 @@
-     private native boolean isLoaded0(long address, long length, int pageCount);
-     private native void load0(long address, long length);
-     private native void force0(FileDescriptor fd, long address, long length);
-+    @HotSpotIntrinsicCandidate
-+    private native void force0_mapsync(long address, long length);
+--- old/src/java.base/share/classes/java/nio/channels/FileChannel.java	2018-08-20 11:53:44.025445388 +0100
++++ new/src/java.base/share/classes/java/nio/channels/FileChannel.java	2018-08-20 11:53:43.714444461 +0100
+@@ -817,6 +817,18 @@
+         public static final MapMode PRIVATE
+             = new MapMode("PRIVATE");
  
-     // -- Covariant return type overrides
++        /**
++         * Mode for a read-only mapping from a non-volatile device.
++         */
++        public static final MapMode READ_ONLY_PERSISTENT
++            = new MapMode("READ_ONLY_PERSISTENT");
++
++        /**
++         * Mode for a read/write mapping from a non-volatile device.
++         */
++        public static final MapMode READ_WRITE_PERSISTENT
++            = new MapMode("READ_WRITE_PERSISTENT");
++
+         private final String name;
  
---- old/src/java.base/share/classes/sun/nio/ch/FileChannelImpl.java	2018-05-22 15:37:26.569277578 +0100
-+++ new/src/java.base/share/classes/sun/nio/ch/FileChannelImpl.java	2018-05-22 15:37:26.323276088 +0100
-@@ -932,7 +932,11 @@
-     private static final int MAP_RW = 1;
-     private static final int MAP_PV = 2;
+         private MapMode(String name) {
+@@ -889,10 +901,12 @@
+      *
+      * @param  mode
+      *         One of the constants {@link MapMode#READ_ONLY READ_ONLY}, {@link
+-     *         MapMode#READ_WRITE READ_WRITE}, or {@link MapMode#PRIVATE
+-     *         PRIVATE} defined in the {@link MapMode} class, according to
++     *         MapMode#READ_WRITE READ_WRITE}, {@link MapMode#PRIVATE
++     *         PRIVATE}, {@link MapMode#READ_ONLY_PERSISTENT READ_ONLY_PERSISTENT}
++     *         or {@link MapMode#READ_WRITE_PERSISTENT READ_WRITE_PERSISTENT} defined in the {@link MapMode} class, according to
+      *         whether the file is to be mapped read-only, read/write, or
+-     *         privately (copy-on-write), respectively
++     *         privately (copy-on-write), read-only from a non-volatile
++     *         device or read-write from a non-volatile device, respectively
+      *
+      * @param  position
+      *         The position within the file at which the mapped region
+@@ -905,13 +919,14 @@
+      * @return  The mapped byte buffer
+      *
+      * @throws NonReadableChannelException
+-     *         If the {@code mode} is {@link MapMode#READ_ONLY READ_ONLY} but
++     *         If the {@code mode} is {@link MapMode#READ_ONLY READ_ONLY} or
++     *         {@link MapMode#READ_ONLY_PERSISTENT READ_ONLY_PERSISTENT} but
+      *         this channel was not opened for reading
+      *
+      * @throws NonWritableChannelException
+-     *         If the {@code mode} is {@link MapMode#READ_WRITE READ_WRITE} or
+-     *         {@link MapMode#PRIVATE PRIVATE} but this channel was not opened
+-     *         for both reading and writing
++     *         If the {@code mode} is {@link MapMode#READ_WRITE READ_WRITE},
++     *         {@link MapMode#PRIVATE PRIVATE} or {@link MapMode#READ_WRITE_PERSISTENT READ_WRITE_PERSISTENT}
++     *         but this channel was not opened for both reading and writing
+      *
+      * @throws IllegalArgumentException
+      *         If the preconditions on the parameters do not hold
+--- old/src/java.base/share/classes/jdk/internal/misc/Unsafe.java	2018-08-20 11:53:44.610447131 +0100
++++ new/src/java.base/share/classes/jdk/internal/misc/Unsafe.java	2018-08-20 11:53:44.320446267 +0100
+@@ -918,6 +918,89 @@
+         checkPointer(null, address);
+     }
  
--    public MappedByteBuffer map(MapMode mode, long position, long size)
-+    public MappedByteBuffer map(MapMode mode, long position, long size) throws IOException {
-+        return map(mode, position, size, false);
++    /**
++     * ensure writeback of a specified virtual memory address range
++     * from cache to physical memory. all bytes in the address range
++     * are guaranteed to have been written back to physical memory on
++     * return from this call i.e. subsequently executed store
++     * instructions are guaranteed not to be visible before the
++     * writeback is completed.
++     *
++     * @param address
++     *        the lowest byte address that must be guaranteed written
++     *        back to memory. bytes at lower addresses may also be
++     *        written back.
++     *
++     * @param length
++     *        the length in bytes of the region starting at address
++     *        that must be guaranteed written back to memory.
++     *        
++     * @throws RuntimeException if the arguments are invalid
++     *         (<em>Note:</em> after optimization, invalid inputs may
++     *         go undetected, which will lead to unpredictable
++     *         behavior)
++     *
++     * @since 12
++     */
++    
++    public void writebackMemory(long address, long length)
++    {
++        checkWritebackMemory(address, length);
++
++        // perform any required pre-writeback barrier
++        writebackPreSync0();
++
++        // write back one cache line at a time
++        long line = (address & CACHE_LINE_MASK);
++        long end = address + length;
++        while (line < end) {
++            writeback0(line);
++            line += CACHE_LINE_FLUSH_SIZE;
++        }
++
++        // perform any required post-writeback barrier
++        writebackPostSync0();
 +    }
 +
-+    public MappedByteBuffer map(MapMode mode, long position, long size, boolean mapSync)
-         throws IOException
++    /**
++     * Validate the arguments to writebackMemory
++     *
++     * @throws RuntimeException if the arguments are invalid
++     *         (<em>Note:</em> after optimization, invalid inputs may
++     *         go undetected, which will lead to unpredictable
++     *         behavior)
++     */
++    private void checkWritebackMemory(long address, long length)
++    {
++        checkNativeAddress(address);
++        checkSize(length);
++    }
++    
++    /**
++     * The size of an L1 data cache line which will be a power of two.
++     */
++    private static final long CACHE_LINE_FLUSH_SIZE = (long)theUnsafe.dataCacheLineFlushSize0();
++    private static final long CACHE_LINE_MASK = ~(CACHE_LINE_FLUSH_SIZE - 1);
++
++    /**
++     * primitive operation forcing writeback of a single cache line.
++     *
++     * @param address
++     *        the start address of the cache line to be written back
++     */
++    // native used to write back an individual cache line starting at
++    // the supplied address
++    @HotSpotIntrinsicCandidate
++    private native void writeback0(long address);
++    // native used to serialise writeback operations relative to
++    // preceding memory writes
++    @HotSpotIntrinsicCandidate
++    private native void writebackPreSync0();
++    // native used to serialise writeback operations relative to
++    // following memory writes
++    @HotSpotIntrinsicCandidate
++    private native void writebackPostSync0();
++    
+     /// random queries
+ 
+     /**
+@@ -1172,7 +1255,6 @@
+      */
+     public native int pageSize();
+ 
+-
+     /// random trusted operations from JNI:
+ 
+     /**
+@@ -3712,6 +3794,7 @@
+     private native int arrayBaseOffset0(Class<?> arrayClass);
+     private native int arrayIndexScale0(Class<?> arrayClass);
+     private native int addressSize0();
++    private native int dataCacheLineFlushSize0();
+     private native Class<?> defineAnonymousClass0(Class<?> hostClass, byte[] data, Object[] cpPatches);
+     private native int getLoadAverage0(double[] loadavg, int nelems);
+     private native boolean unalignedAccess0();
+--- old/src/java.base/share/classes/sun/nio/ch/FileChannelImpl.java	2018-08-20 11:53:45.237448999 +0100
++++ new/src/java.base/share/classes/sun/nio/ch/FileChannelImpl.java	2018-08-20 11:53:44.936448102 +0100
+@@ -866,20 +866,15 @@
+ 
+     // -- Memory-mapped buffers --
+ 
+-    private static class Unmapper
++    private static abstract class Unmapper
+         implements Runnable
      {
-         ensureOpen();
-@@ -996,9 +1000,9 @@
+         // may be required to close file
+         private static final NativeDispatcher nd = new FileDispatcherImpl();
+ 
+-        // keep track of mapped buffer usage
+-        static volatile int count;
+-        static volatile long totalSize;
+-        static volatile long totalCapacity;
+-
+         private volatile long address;
+-        private final long size;
+-        private final int cap;
++        protected final long size;
++        protected final int cap;
+         private final FileDescriptor fd;
+ 
+         private Unmapper(long address, long size, int cap,
+@@ -890,12 +885,6 @@
+             this.size = size;
+             this.cap = cap;
+             this.fd = fd;
+-
+-            synchronized (Unmapper.class) {
+-                count++;
+-                totalSize += size;
+-                totalCapacity += cap;
+-            }
+         }
+ 
+         public void run() {
+@@ -913,14 +902,70 @@
+                 }
+             }
+ 
+-            synchronized (Unmapper.class) {
++            decrement_stats();
++        }
++        protected abstract void increment_stats();
++        protected abstract void decrement_stats();
++    }
++
++    private static class DefaultUnmapper extends Unmapper {
++
++        // keep track of non-persistent mapped buffer usage
++        static volatile int count;
++        static volatile long totalSize;
++        static volatile long totalCapacity;
++
++        public DefaultUnmapper(long address, long size, int cap,
++                                     FileDescriptor fd) {
++            super(address, size, cap, fd);
++            increment_stats();
++        }
++        
++        protected void increment_stats() {
++            synchronized (DefaultUnmapper.class) {
++                count++;
++                totalSize += size;
++                totalCapacity += cap;
++            }
++        }
++        protected void decrement_stats() {
++            synchronized (DefaultUnmapper.class) {
+                 count--;
+                 totalSize -= size;
+                 totalCapacity -= cap;
+             }
+         }
+     }
++    
++    private static class PersistentUnmapper extends Unmapper {
+ 
++        // keep track of mapped buffer usage
++        static volatile int count;
++        static volatile long totalSize;
++        static volatile long totalCapacity;
++
++        public PersistentUnmapper(long address, long size, int cap,
++                                  FileDescriptor fd) {
++            super(address, size, cap, fd);
++            increment_stats();
++        }
++        
++        protected void increment_stats() {
++            synchronized (PersistentUnmapper.class) {
++                count++;
++                totalSize += size;
++                totalCapacity += cap;
++            }
++        }
++        protected void decrement_stats() {
++            synchronized (PersistentUnmapper.class) {
++                count--;
++                totalSize -= size;
++                totalCapacity -= cap;
++            }
++        }
++    }
++    
+     private static void unmap(MappedByteBuffer bb) {
+         Cleaner cl = ((DirectBuffer)bb).cleaner();
+         if (cl != null)
+@@ -947,12 +992,21 @@
+             throw new IllegalArgumentException("Size exceeds Integer.MAX_VALUE");
+ 
+         int imode = -1;
++        boolean isPersistent = false;
+         if (mode == MapMode.READ_ONLY)
+             imode = MAP_RO;
+         else if (mode == MapMode.READ_WRITE)
+             imode = MAP_RW;
+-        else if (mode == MapMode.PRIVATE)
++        else if (mode == MapMode.PRIVATE) {
+             imode = MAP_PV;
++        } else if (mode == MapMode.READ_ONLY_PERSISTENT) {
++            imode = MAP_RO;
++            isPersistent = true;
++        } else if (mode == MapMode.READ_WRITE_PERSISTENT) {
++            imode = MAP_RW;
++            isPersistent = true;
++        }
++
+         assert (imode >= 0);
+         if ((mode != MapMode.READ_ONLY) && !writable)
+             throw new NonWritableChannelException();
+@@ -995,9 +1049,9 @@
                      // a valid file descriptor is not required
                      FileDescriptor dummy = new FileDescriptor();
                      if ((!writable) || (imode == MAP_RO))
 -                        return Util.newMappedByteBufferR(0, 0, dummy, null);
-+                        return Util.newMappedByteBufferR(0, 0, dummy, null, mapSync);
++                        return Util.newMappedByteBufferR(0, 0, dummy, null, isPersistent);
                      else
 -                        return Util.newMappedByteBuffer(0, 0, dummy, null);
-+                        return Util.newMappedByteBuffer(0, 0, dummy, null, mapSync);
++                        return Util.newMappedByteBuffer(0, 0, dummy, null, isPersistent);
                  }
  
                  pagePosition = (int)(position % allocationGranularity);
-@@ -1006,7 +1010,7 @@
+@@ -1005,7 +1059,7 @@
                  mapSize = size + pagePosition;
                  try {
                      // If map0 did not throw an exception, the address is valid
 -                    addr = map0(imode, mapPosition, mapSize);
-+                    addr = map0(imode, mapPosition, mapSize, mapSync ? 1 : 0);
++                    addr = map0(imode, mapPosition, mapSize, isPersistent);
                  } catch (OutOfMemoryError x) {
                      // An OutOfMemoryError may indicate that we've exhausted
                      // memory so force gc and re-attempt map
-@@ -1017,7 +1021,7 @@
+@@ -1016,7 +1070,7 @@
                          Thread.currentThread().interrupt();
                      }
                      try {
 -                        addr = map0(imode, mapPosition, mapSize);
-+                        addr = map0(imode, mapPosition, mapSize, mapSync ? 1 : 0);
++                        addr = map0(imode, mapPosition, mapSize, isPersistent);
                      } catch (OutOfMemoryError y) {
                          // After a second OOME, fail
                          throw new IOException("Map failed", y);
-@@ -1043,12 +1047,14 @@
+@@ -1037,17 +1091,21 @@
+             assert (IOStatus.checkAll(addr));
+             assert (addr % allocationGranularity == 0);
+             int isize = (int)size;
+-            Unmapper um = new Unmapper(addr, mapSize, isize, mfd);
++            Unmapper um = (isPersistent
++                           ? new PersistentUnmapper(addr, mapSize, isize, mfd)
++                           : new DefaultUnmapper(addr, mapSize, isize, mfd));
+             if ((!writable) || (imode == MAP_RO)) {
                  return Util.newMappedByteBufferR(isize,
                                                   addr + pagePosition,
                                                   mfd,
 -                                                 um);
 +                                                 um,
-+                                                 mapSync);
++                                                 isPersistent);
              } else {
                  return Util.newMappedByteBuffer(isize,
                                                  addr + pagePosition,
                                                  mfd,
 -                                                um);
 +                                                um,
-+                                                mapSync);
++                                                isPersistent);
              }
          } finally {
              threads.remove(ti);
-@@ -1202,7 +1208,7 @@
+@@ -1067,15 +1125,40 @@
+             }
+             @Override
+             public long getCount() {
+-                return Unmapper.count;
++                return DefaultUnmapper.count;
++            }
++            @Override
++            public long getTotalCapacity() {
++                return DefaultUnmapper.totalCapacity;
++            }
++            @Override
++            public long getMemoryUsed() {
++                return DefaultUnmapper.totalSize;
++            }
++        };
++    }
++
++    /**
++     * Invoked by sun.management.ManagementFactoryHelper to create the management
++     * interface for persistent mapped buffers.
++     */
++    public static JavaNioAccess.BufferPool getPersistentMappedBufferPool() {
++        return new JavaNioAccess.BufferPool() {
++            @Override
++            public String getName() {
++                return "mapped_persistent";
++            }
++            @Override
++            public long getCount() {
++                return PersistentUnmapper.count;
+             }
+             @Override
+             public long getTotalCapacity() {
+-                return Unmapper.totalCapacity;
++                return PersistentUnmapper.totalCapacity;
+             }
+             @Override
+             public long getMemoryUsed() {
+-                return Unmapper.totalSize;
++                return PersistentUnmapper.totalSize;
+             }
+         };
+     }
+@@ -1201,7 +1284,7 @@
      // -- Native methods --
  
      // Creates a new mapping
 -    private native long map0(int prot, long position, long length)
-+    private native long map0(int prot, long position, long length, int map_sync)
++    private native long map0(int prot, long position, long length, boolean isPersistent)
          throws IOException;
  
      // Removes an existing mapping
---- old/src/java.base/share/classes/sun/nio/ch/Util.java	2018-05-22 15:37:27.126280950 +0100
-+++ new/src/java.base/share/classes/sun/nio/ch/Util.java	2018-05-22 15:37:26.846279255 +0100
-@@ -408,7 +408,8 @@
+--- old/src/java.base/share/classes/sun/nio/ch/Util.java	2018-08-20 11:53:45.822450742 +0100
++++ new/src/java.base/share/classes/sun/nio/ch/Util.java	2018-08-20 11:53:45.525449857 +0100
+@@ -415,7 +415,8 @@
                              new Class<?>[] { int.class,
                                               long.class,
                                               FileDescriptor.class,
@@ -560,27 +1456,27 @@
                          ctor.setAccessible(true);
                          directByteBufferConstructor = ctor;
                      } catch (ClassNotFoundException   |
-@@ -423,7 +424,8 @@
+@@ -430,7 +431,8 @@
  
      static MappedByteBuffer newMappedByteBuffer(int size, long addr,
                                                  FileDescriptor fd,
 -                                                Runnable unmapper)
 +                                                Runnable unmapper,
-+                                                boolean isMapSync)
++                                                boolean isPersistent)
      {
          MappedByteBuffer dbb;
          if (directByteBufferConstructor == null)
-@@ -433,7 +435,8 @@
+@@ -440,7 +442,8 @@
                new Object[] { size,
                               addr,
                               fd,
 -                             unmapper });
 +                             unmapper,
-+                             isMapSync });
++                             isPersistent});
          } catch (InstantiationException |
                   IllegalAccessException |
                   InvocationTargetException e) {
-@@ -453,7 +456,8 @@
+@@ -460,7 +463,8 @@
                              new Class<?>[] { int.class,
                                               long.class,
                                               FileDescriptor.class,
@@ -590,1110 +1486,109 @@
                          ctor.setAccessible(true);
                          directByteBufferRConstructor = ctor;
                      } catch (ClassNotFoundException |
-@@ -468,7 +472,8 @@
+@@ -475,7 +479,8 @@
  
      static MappedByteBuffer newMappedByteBufferR(int size, long addr,
                                                   FileDescriptor fd,
 -                                                 Runnable unmapper)
 +                                                 Runnable unmapper,
-+                                                 boolean isMapSync)
++                                                 boolean isPersistent)
      {
          MappedByteBuffer dbb;
          if (directByteBufferRConstructor == null)
-@@ -478,7 +483,8 @@
+@@ -485,7 +490,8 @@
                new Object[] { size,
                               addr,
                               fd,
 -                             unmapper });
 +                             unmapper,
-+                             isMapSync });
++                             isPersistent});
          } catch (InstantiationException |
                   IllegalAccessException |
                   InvocationTargetException e) {
---- old/src/java.base/unix/native/libnio/MappedByteBuffer.c	2018-05-22 15:37:27.648284110 +0100
-+++ new/src/java.base/unix/native/libnio/MappedByteBuffer.c	2018-05-22 15:37:27.396282584 +0100
-@@ -33,6 +33,8 @@
- #include <stddef.h>
- #include <stdlib.h>
- 
-+#include "pmem/jdk_pmem.h"
-+
- #ifdef _AIX
- #include <unistd.h>
- #endif
-@@ -54,6 +56,34 @@
- }
- #endif
- 
-+/*
-+ * registered native method called instead of force0 when a buffer is
-+ * mapped to persistent main memory with MAP_SYNC and MAP_SHARED.
-+ *
-+ * this uses the libpmem library code to write affected cache lines
-+ * back to main memory. if the compiler intrinsic is enabled then the
-+ * native call is translated to inline cache writeback instructions.
-+ * currently JIT support is only available on linux x86_64.
-+ */
-+void force0_mapsync(JNIEnv *env, jclass ofClass, jlong address, jlong len) {
-+    void* a = (void *)jlong_to_ptr(address);
-+    size_t st = (size_t)len;
-+    LOG(3, "mappedByteBuffer.force_mapsync addr %p len %li", a, len);
-+    pmem_persist(a, st);
-+}
-+
-+static JNINativeMethod methods[] = {
-+    {"force0_mapsync",         "(JJ)V",          (void *)&force0_mapsync},
-+};
-+
-+JNIEXPORT void JNICALL
-+Java_java_nio_MappedByteBuffer_registerNatives(JNIEnv *env, jclass cls)
-+{
-+    (*env)->RegisterNatives(env, cls, methods,
-+                            sizeof(methods)/sizeof(JNINativeMethod));
-+}
-+
-+
- JNIEXPORT jboolean JNICALL
- Java_java_nio_MappedByteBuffer_isLoaded0(JNIEnv *env, jobject obj, jlong address,
-                                          jlong len, jint numPages)
-@@ -120,8 +150,10 @@
-                                       jlong address, jlong len)
- {
-     void* a = (void *)jlong_to_ptr(address);
-+    LOG(3, "mappedByteBuffer.force0 addr %p len %li\n", a, len);
-     int result = msync(a, (size_t)len, MS_SYNC);
-     if (result == -1) {
-         JNU_ThrowIOExceptionWithLastError(env, "msync failed");
-     }
- }
-+
---- old/src/java.base/unix/native/libnio/ch/FileChannelImpl.c	2018-05-22 15:37:28.148287136 +0100
-+++ new/src/java.base/unix/native/libnio/ch/FileChannelImpl.c	2018-05-22 15:37:27.896285611 +0100
-@@ -47,6 +47,8 @@
+--- old/src/java.base/unix/native/libnio/ch/FileChannelImpl.c	2018-08-20 11:53:46.387452425 +0100
++++ new/src/java.base/unix/native/libnio/ch/FileChannelImpl.c	2018-08-20 11:53:46.099451567 +0100
+@@ -47,6 +47,7 @@
  #include "nio_util.h"
  #include "sun_nio_ch_FileChannelImpl.h"
  #include "java_lang_Integer.h"
-+// include pmem headers for LOG tracing
-+#include "pmem/jdk_pmem.h"
++#include <assert.h>
  
  static jfieldID chan_fd;        /* jobject 'fd' in sun.nio.ch.FileChannelImpl */
  
-@@ -70,9 +72,17 @@
- }
+@@ -72,7 +73,7 @@
  
- 
-+/*
-+ * modified FileChannelImpl.map0() takes extra boolean arg map_sync
-+ *
-+ * setting map_sync requests that persistent main memory be mapped to
-+ * back a byte buffer. if set flags MAP_SYNC and MAP_SHARED_VALIDATE
-+ * are passed to mmap. leaving map_sync unset requests the standard
-+ * mapping behaviour.
-+ */
  JNIEXPORT jlong JNICALL
  Java_sun_nio_ch_FileChannelImpl_map0(JNIEnv *env, jobject this,
 -                                     jint prot, jlong off, jlong len)
-+                                     jint prot, jlong off, jlong len, jint map_sync)
++                                     jint prot, jlong off, jlong len, jboolean map_sync)
  {
      void *mapAddress = 0;
      jobject fdo = (*env)->GetObjectField(env, this, chan_fd);
-@@ -91,6 +101,31 @@
+@@ -80,6 +81,9 @@
+     int protections = 0;
+     int flags = 0;
+ 
++    // should never be called with map_sync and prot == PRIVATE
++    assert((prot != sun_nio_ch_FileChannelImpl_MAP_PV) ||! map_sync);
++    
+     if (prot == sun_nio_ch_FileChannelImpl_MAP_RO) {
+         protections = PROT_READ;
+         flags = MAP_SHARED;
+@@ -91,6 +95,33 @@
          flags = MAP_PRIVATE;
      }
  
-+    if(map_sync) {
-+#if defined(__linux__)
-+        if(prot == sun_nio_ch_FileChannelImpl_MAP_PV) {
-+            JNU_ThrowIOException(env, "mmap with MAP_SYNC and MAP_PV not allowed");
-+            return IOS_THROWN;
-+        }
++    // if MAP_SYNC and MAP_SHARED_VALIDATE are not defined then it is
++    // best to define them here. This ensures the code compiles on old
++    // OS releases which do not provide the relevant headers. If run
++    // on the same machine then it will work if the kernel contains
++    // the necessary support otherwise mmap should fail with an
++    // invalid argument error
 +
-+        /*
-+        /usr/include/asm-generic/mman.h:#define MAP_SYNC	0x80000 // perform synchronous page faults for the mapping
-+        /usr/include/asm-generic/mman-common.h:#define MAP_SHARED_VALIDATE 0x03	// share + validate extension flags
-+        */
-+        int MAP_SYNC = 0x80000;
-+        int MAP_SHARED_VALIDATE = 0x03;
-+        flags = flags | MAP_SYNC | MAP_SHARED_VALIDATE;
-+#else
-+        // TODO - implement for solaris/AIX/BSD/WINDOWS
-+        JNU_ThrowIOException(env, "mmap with MAP_SYNC not supported");
-+        return IOS_THROWN;
++#ifndef MAP_SYNC
++#define MAP_SYNC 0x80000
 +#endif
-+}
-+
++#ifndef MAP_SHARED_VALIDATE
++#define MAP_SHARED_VALIDATE 0x03
++#endif
++    
 +    if (map_sync) {
-+        LOG(3, "FileChannelImpl.map0 flags %i\n", flags);
++        // ensure
++        //  1) this is Linux on AArch64 or x86_64
++        //  2) the mmap APIs are available/ at compile time
++#if !defined(LINUX) || ! (defined(aarch64) || (defined(amd64) && defined(_LP64)))
++        // TODO - implement for solaris/AIX/BSD/WINDOWS and for 32 bit
++        JNU_ThrowIOException(env, "map with persistent mode is not implemented");
++        return IOS_THROWN;
++#else
++        flags |= MAP_SYNC | MAP_SHARED_VALIDATE;
++#endif
 +    }
 +
      mapAddress = mmap64(
          0,                    /* Let OS decide location */
          len,                  /* Number of bytes to map */
-@@ -104,9 +139,19 @@
-             JNU_ThrowOutOfMemoryError(env, "Map failed");
-             return IOS_THROWN;
-         }
-+
-+        if(map_sync && errno == ENOTSUP) {
-+            JNU_ThrowIOExceptionWithLastError(env, "MAP_SYNC not supported");
+@@ -100,6 +131,11 @@
+         off);                 /* Offset into file */
+ 
+     if (mapAddress == MAP_FAILED) {
++        if (map_sync && errno == ENOTSUP) {
++            JNU_ThrowIOExceptionWithLastError(env, "map with persistent mode is not supported");
 +            return IOS_THROWN;
 +        }
 +
-         return handle(env, -1, "Map failed");
+         if (errno == ENOMEM) {
+             JNU_ThrowOutOfMemoryError(env, "Map failed");
+             return IOS_THROWN;
+--- old/src/java.management/share/classes/sun/management/ManagementFactoryHelper.java	2018-08-20 11:53:46.957454123 +0100
++++ new/src/java.management/share/classes/sun/management/ManagementFactoryHelper.java	2018-08-20 11:53:46.657453229 +0100
+@@ -345,6 +345,8 @@
+                 .getDirectBufferPool()));
+             bufferPools.add(createBufferPoolMXBean(sun.nio.ch.FileChannelImpl
+                 .getMappedBufferPool()));
++            bufferPools.add(createBufferPoolMXBean(sun.nio.ch.FileChannelImpl
++                .getPersistentMappedBufferPool()));
+         }
+         return bufferPools;
      }
- 
-+    if (map_sync) {
-+        LOG(3, "FileChannelImpl.map0 addr %p\n", mapAddress);
-+    }
-+
-     return ((jlong) (unsigned long) mapAddress);
- }
- 
---- /dev/null	2018-05-21 11:33:33.061752063 +0100
-+++ new/src/java.base/unix/native/libnio/pmem/cpu.c	2018-05-22 15:37:28.399288656 +0100
-@@ -0,0 +1,180 @@
-+/*
-+ * Copyright 2015-2017, Intel Corporation
-+ *
-+ * Redistribution and use in source and binary forms, with or without
-+ * modification, are permitted provided that the following conditions
-+ * are met:
-+ *
-+ *     * Redistributions of source code must retain the above copyright
-+ *       notice, this list of conditions and the following disclaimer.
-+ *
-+ *     * Redistributions in binary form must reproduce the above copyright
-+ *       notice, this list of conditions and the following disclaimer in
-+ *       the documentation and/or other materials provided with the
-+ *       distribution.
-+ *
-+ *     * Neither the name of the copyright holder nor the names of its
-+ *       contributors may be used to endorse or promote products derived
-+ *       from this software without specific prior written permission.
-+ *
-+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-+ * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-+ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-+ */
-+
-+/*
-+ * cpu.c -- CPU features detection
-+ *
-+ * These routines do not work AARCH64 platforms, and need new detection
-+ * routiones to be added. Currently to ensure msync is not used and ARM
-+ * FLUSH instructions are used PMEM_IS_PMEM_FORCE=1 needs to be used.
-+ */
-+
-+/*
-+ * Reference:
-+ * http://www.intel.com/content/www/us/en/processors/
-+ * architectures-software-developer-manuals.html
-+ *
-+ * https://support.amd.com/TechDocs/24594.pdf
-+ */
-+
-+#include <string.h>
-+#include <stdlib.h>
-+
-+#include "jdk_pmem.h"
-+#include "cpu.h"
-+
-+#define EAX_IDX 0
-+#define EBX_IDX 1
-+#define ECX_IDX 2
-+#define EDX_IDX 3
-+
-+#if defined(__x86_64__) || defined(__amd64__)
-+
-+#include <cpuid.h>
-+
-+static inline void
-+cpuid(unsigned func, unsigned subfunc, unsigned cpuinfo[4])
-+{
-+	__cpuid_count(func, subfunc, cpuinfo[EAX_IDX], cpuinfo[EBX_IDX],
-+			cpuinfo[ECX_IDX], cpuinfo[EDX_IDX]);
-+}
-+
-+#elif defined(_M_X64) || defined(_M_AMD64)
-+
-+#include <intrin.h>
-+
-+static inline void
-+cpuid(unsigned func, unsigned subfunc, unsigned cpuinfo[4])
-+{
-+	__cpuidex(cpuinfo, func, subfunc);
-+}
-+
-+#else /* not x86_64 */
-+
-+#define cpuid(func, subfunc, cpuinfo)\
-+	do { (void)(func); (void)(subfunc); (void)(cpuinfo); } while (0)
-+
-+#endif
-+
-+#ifndef bit_CLFLUSH
-+#define bit_CLFLUSH	(1 << 19)
-+#endif
-+
-+#ifndef bit_CLFLUSHOPT
-+#define bit_CLFLUSHOPT	(1 << 23)
-+#endif
-+
-+#ifndef bit_CLWB
-+#define bit_CLWB	(1 << 24)
-+#endif
-+
-+/*
-+ * is_cpu_feature_present -- (internal) checks if CPU feature is supported
-+ */
-+static int
-+is_cpu_feature_present(unsigned func, unsigned reg, unsigned bit)
-+{
-+	unsigned cpuinfo[4] = { 0 };
-+
-+	/* check CPUID level first */
-+	cpuid(0x0, 0x0, cpuinfo);
-+	if (cpuinfo[EAX_IDX] < func)
-+		return 0;
-+
-+	cpuid(func, 0x0, cpuinfo);
-+	return (cpuinfo[reg] & bit) != 0;
-+}
-+
-+/*
-+ * is_cpu_genuine_intel -- checks for genuine Intel CPU
-+ */
-+int
-+is_cpu_genuine_intel(void)
-+{
-+	unsigned cpuinfo[4] = { 0 };
-+
-+	union {
-+		char name[0x20];
-+		unsigned cpuinfo[3];
-+	} vendor;
-+
-+	memset(&vendor, 0, sizeof(vendor));
-+
-+	cpuid(0x0, 0x0, cpuinfo);
-+
-+	vendor.cpuinfo[0] = cpuinfo[EBX_IDX];
-+	vendor.cpuinfo[1] = cpuinfo[EDX_IDX];
-+	vendor.cpuinfo[2] = cpuinfo[ECX_IDX];
-+
-+	LOG(4, "CPU vendor: %s", vendor.name);
-+	return (strncmp(vendor.name, "GenuineIntel",
-+				sizeof(vendor.name))) == 0;
-+}
-+
-+/*
-+ * is_cpu_clflush_present -- checks if CLFLUSH instruction is supported
-+ */
-+int
-+is_cpu_clflush_present(void)
-+{
-+	int ret = is_cpu_feature_present(0x1, EDX_IDX, bit_CLFLUSH);
-+	LOG(4, "CLFLUSH %ssupported", ret == 0 ? "not " : "");
-+
-+	return ret;
-+}
-+
-+/*
-+ * is_cpu_clflushopt_present -- checks if CLFLUSHOPT instruction is supported
-+ */
-+int
-+is_cpu_clflushopt_present(void)
-+{
-+	int ret = is_cpu_feature_present(0x7, EBX_IDX, bit_CLFLUSHOPT);
-+	LOG(4, "CLFLUSHOPT %ssupported", ret == 0 ? "not " : "");
-+
-+	return ret;
-+}
-+
-+/*
-+ * is_cpu_clwb_present -- checks if CLWB instruction is supported
-+ */
-+int
-+is_cpu_clwb_present(void)
-+{
-+	if (!is_cpu_genuine_intel())
-+		return 0;
-+
-+	int ret = is_cpu_feature_present(0x7, EBX_IDX, bit_CLWB);
-+	LOG(4, "CLWB %ssupported", ret == 0 ? "not " : "");
-+
-+	return ret;
-+}
---- /dev/null	2018-05-21 11:33:33.061752063 +0100
-+++ new/src/java.base/unix/native/libnio/pmem/cpu.h	2018-05-22 15:37:28.939291924 +0100
-@@ -0,0 +1,45 @@
-+/*
-+ * Copyright 2016-2017, Intel Corporation
-+ *
-+ * Redistribution and use in source and binary forms, with or without
-+ * modification, are permitted provided that the following conditions
-+ * are met:
-+ *
-+ *     * Redistributions of source code must retain the above copyright
-+ *       notice, this list of conditions and the following disclaimer.
-+ *
-+ *     * Redistributions in binary form must reproduce the above copyright
-+ *       notice, this list of conditions and the following disclaimer in
-+ *       the documentation and/or other materials provided with the
-+ *       distribution.
-+ *
-+ *     * Neither the name of the copyright holder nor the names of its
-+ *       contributors may be used to endorse or promote products derived
-+ *       from this software without specific prior written permission.
-+ *
-+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-+ * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-+ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-+ */
-+
-+#ifndef PMDK_CPU_H
-+#define PMDK_CPU_H 1
-+
-+/*
-+ * cpu.h -- definitions for "cpu" module
-+ */
-+
-+int is_cpu_genuine_intel(void);
-+int is_cpu_clflush_present(void);
-+int is_cpu_clflushopt_present(void);
-+int is_cpu_clwb_present(void);
-+
-+#endif
---- /dev/null	2018-05-21 11:33:33.061752063 +0100
-+++ new/src/java.base/unix/native/libnio/pmem/jdk_pmem.h	2018-05-22 15:37:29.475295169 +0100
-@@ -0,0 +1,52 @@
-+
-+void pmem_init(void);
-+
-+void pmem_persist(const void *addr, size_t len);
-+
-+#ifndef _MSC_VER
-+#define ATTR_CONSTRUCTOR __attribute__((constructor)) static
-+#define ATTR_DESTRUCTOR __attribute__((destructor)) static
-+#else
-+#define ATTR_CONSTRUCTOR
-+#define ATTR_DESTRUCTOR
-+#endif
-+
-+// util.h
-+#define util_bool_compare_and_swap32 __sync_bool_compare_and_swap
-+#define util_fetch_and_add32 __sync_fetch_and_add
-+
-+// out.h
-+
-+#define EVALUATE_DBG_EXPRESSIONS 0
-+
-+#define FORMAT_PRINTF(a, b) __attribute__((__format__(__printf__, (a), (b))))
-+
-+void out_log(const char *file, int line, const char *func, int level,
-+	const char *fmt, ...) FORMAT_PRINTF(5, 6);
-+
-+#define OUT_LOG out_log
-+
-+/* produce debug/trace output */
-+#define LOG(level, ...) do { \
-+	if (!EVALUATE_DBG_EXPRESSIONS) break;\
-+	OUT_LOG(__FILE__, __LINE__, __func__, level, __VA_ARGS__);\
-+} while (0)
-+
-+#define OUT_FATAL_ABORT out_fatal_abort
-+
-+static __attribute__((always_inline)) __attribute__((noreturn)) inline void
-+out_fatal_abort(const char *file, int line, const char *func,
-+		const char *fmt, ...)
-+{
-+	(void) file;
-+	(void) line;
-+	(void) func;
-+	(void) fmt;
-+
-+	abort();
-+}
-+
-+/* produce output and exit */
-+#define FATAL(...)\
-+	OUT_FATAL_ABORT(__FILE__, __LINE__, __func__, __VA_ARGS__)
-+
---- /dev/null	2018-05-21 11:33:33.061752063 +0100
-+++ new/src/java.base/unix/native/libnio/pmem/out.c	2018-05-22 15:37:29.983298244 +0100
-@@ -0,0 +1,17 @@
-+#include <stdarg.h>
-+#include <stdio.h>
-+
-+void
-+out_log(const char *file, int line, const char *func, int level,
-+		const char *fmt, ...)
-+{
-+	printf("jdk_pmem_logging: %s %i %s ", file, line, func);
-+
-+	va_list ap;
-+	va_start(ap, fmt);
-+	vprintf(fmt, ap);
-+	va_end(ap);
-+
-+	printf("\n");
-+
-+}
---- /dev/null	2018-05-21 11:33:33.061752063 +0100
-+++ new/src/java.base/unix/native/libnio/pmem/pmem.c	2018-05-22 15:37:30.641302228 +0100
-@@ -0,0 +1,639 @@
-+/*
-+ * Copyright 2014-2018, Intel Corporation
-+ *
-+ * Redistribution and use in source and binary forms, with or without
-+ * modification, are permitted provided that the following conditions
-+ * are met:
-+ *
-+ *     * Redistributions of source code must retain the above copyright
-+ *       notice, this list of conditions and the following disclaimer.
-+ *
-+ *     * Redistributions in binary form must reproduce the above copyright
-+ *       notice, this list of conditions and the following disclaimer in
-+ *       the documentation and/or other materials provided with the
-+ *       distribution.
-+ *
-+ *     * Neither the name of the copyright holder nor the names of its
-+ *       contributors may be used to endorse or promote products derived
-+ *       from this software without specific prior written permission.
-+ *
-+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-+ * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-+ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-+ */
-+
-+/*
-+ * pmem.c -- pmem entry points for libpmem
-+ *
-+ *
-+ * PERSISTENT MEMORY INSTRUCTIONS ON X86
-+ *
-+ * The primary feature of this library is to provide a way to flush
-+ * changes to persistent memory as outlined below (note that many
-+ * of the decisions below are made at initialization time, and not
-+ * repeated every time a flush is requested).
-+ *
-+ * To flush a range to pmem when CLWB is available:
-+ *
-+ *	CLWB for each cache line in the given range.
-+ *
-+ *	SFENCE to ensure the CLWBs above have completed.
-+ *
-+ * To flush a range to pmem when CLFLUSHOPT is available and CLWB is not
-+ * (same as above but issue CLFLUSHOPT instead of CLWB):
-+ *
-+ *	CLFLUSHOPT for each cache line in the given range.
-+ *
-+ *	SFENCE to ensure the CLWBs above have completed.
-+ *
-+ * To flush a range to pmem when neither CLFLUSHOPT or CLWB are available
-+ * (same as above but fences surrounding CLFLUSH are not required):
-+ *
-+ *	CLFLUSH for each cache line in the given range.
-+ *
-+ * To memcpy a range of memory to pmem when MOVNT is available:
-+ *
-+ *	Copy any non-64-byte portion of the destination using MOV.
-+ *
-+ *	Use the flush flow above without the fence for the copied portion.
-+ *
-+ *	Copy using MOVNTDQ, up to any non-64-byte aligned end portion.
-+ *	(The MOVNT instructions bypass the cache, so no flush is required.)
-+ *
-+ *	Copy any unaligned end portion using MOV.
-+ *
-+ *	Use the flush flow above for the copied portion (including fence).
-+ *
-+ * To memcpy a range of memory to pmem when MOVNT is not available:
-+ *
-+ *	Just pass the call to the normal memcpy() followed by pmem_persist().
-+ *
-+ * To memset a non-trivial sized range of memory to pmem:
-+ *
-+ *	Same as the memcpy cases above but store the given value instead
-+ *	of reading values from the source.
-+ *
-+ * These features are supported for ARM AARCH64 using equivalent ARM
-+ * assembly instruction. Please refer to (arm_cacheops.h) for more details.
-+ *
-+ * INTERFACES FOR FLUSHING TO PERSISTENT MEMORY
-+ *
-+ * Given the flows above, three interfaces are provided for flushing a range
-+ * so that the caller has the ability to separate the steps when necessary,
-+ * but otherwise leaves the detection of available instructions to the libpmem:
-+ *
-+ * pmem_persist(addr, len)
-+ *
-+ *	This is the common case, which just calls the two other functions:
-+ *
-+ *		pmem_flush(addr, len);
-+ *		pmem_drain();
-+ *
-+ * pmem_flush(addr, len)
-+ *
-+ *	CLWB or CLFLUSHOPT or CLFLUSH for each cache line
-+ *
-+ * pmem_drain()
-+ *
-+ *	SFENCE unless using CLFLUSH
-+ *
-+ *
-+ * INTERFACES FOR COPYING/SETTING RANGES OF MEMORY
-+ *
-+ * Given the flows above, the following interfaces are provided for the
-+ * memmove/memcpy/memset operations to persistent memory:
-+ *
-+ * pmem_memmove_nodrain()
-+ *
-+ *	Checks for overlapped ranges to determine whether to copy from
-+ *	the beginning of the range or from the end.  If MOVNT instructions
-+ *	are available, uses the memory copy flow described above, otherwise
-+ *	calls the libc memmove() followed by pmem_flush(). Since no conditional
-+ *	compilation and/or architecture specific CFLAGS are in use at the
-+ *	moment, SSE2 ( thus movnt ) is just assumed to be available.
-+ *
-+ * pmem_memcpy_nodrain()
-+ *
-+ *	Just calls pmem_memmove_nodrain().
-+ *
-+ * pmem_memset_nodrain()
-+ *
-+ *	If MOVNT instructions are available, uses the memset flow described
-+ *	above, otherwise calls the libc memset() followed by pmem_flush().
-+ *
-+ * pmem_memmove_persist()
-+ * pmem_memcpy_persist()
-+ * pmem_memset_persist()
-+ *
-+ *	Calls the appropriate _nodrain() function followed by pmem_drain().
-+ *
-+ *
-+ * DECISIONS MADE AT INITIALIZATION TIME
-+ *
-+ * As much as possible, all decisions described above are made at library
-+ * initialization time.  This is achieved using function pointers that are
-+ * setup by pmem_init() when the library loads.
-+ *
-+ *	Func_predrain_fence is used by pmem_drain() to call one of:
-+ *		predrain_fence_empty()
-+ *		predrain_memory_barrier()
-+ *
-+ *	Func_flush is used by pmem_flush() to call one of:
-+ *		flush_dcache()
-+ *		flush_dcache_invalidate_opt()
-+ *		flush_dcache_invalidate()
-+ *
-+ *	Func_memmove_nodrain is used by memmove_nodrain() to call one of:
-+ *		memmove_nodrain_normal()
-+ *		memmove_nodrain_movnt()
-+ *
-+ *	Func_memset_nodrain is used by memset_nodrain() to call one of:
-+ *		memset_nodrain_normal()
-+ *		memset_nodrain_movnt()
-+ *
-+ * DEBUG LOGGING
-+ *
-+ * Many of the functions here get called hundreds of times from loops
-+ * iterating over ranges, making the usual LOG() calls at level 3
-+ * impractical.  The call tracing log for those functions is set at 15.
-+ */
-+
-+#ifndef _GNU_SOURCE
-+#define _GNU_SOURCE
-+#endif
-+
-+#include <sys/mman.h>
-+#include <sys/stat.h>
-+#include <stdio.h>
-+#include <stdlib.h>
-+#include <stdint.h>
-+#include <string.h>
-+#ifndef __aarch64__
-+#include <emmintrin.h>
-+#endif
-+#include <errno.h>
-+#include <fcntl.h>
-+#include <unistd.h>
-+#include <limits.h>
-+
-+#ifdef _WIN32
-+#include <memoryapi.h>
-+#endif
-+
-+#include "cpu.h"
-+#include "jdk_pmem.h"
-+
-+
-+/*
-+ * copy from libpmem.c
-+ *
-+ * libpmem_init -- load-time initialization for libpmem
-+ *
-+ * Called automatically by the run-time loader.
-+ */
-+ATTR_CONSTRUCTOR
-+void
-+libpmem_init(void)
-+{
-+	LOG(3, NULL);
-+	pmem_init();
-+}
-+
-+
-+
-+// copy from os_posix.c. requires #def _GNU_SOURCE
-+char *
-+os_getenv(const char *name)
-+{
-+	return secure_getenv(name);
-+}
-+
-+
-+#ifndef _MSC_VER
-+/*
-+ * The x86 memory instructions are new enough that the compiler
-+ * intrinsic functions are not always available.  The intrinsic
-+ * functions are defined here in terms of asm statements for now.
-+ */
-+
-+#ifndef __aarch64__
-+#define _mm_clflushopt(addr)\
-+	asm volatile(".byte 0x66; clflush %0" : "+m" (*(volatile char *)addr));
-+#define _mm_clwb(addr)\
-+	asm volatile(".byte 0x66; xsaveopt %0" : "+m" (*(volatile char *)addr));
-+#endif /* __aarch64__ */
-+#endif /* _MSC_VER */
-+
-+#define FLUSH_ALIGN ((uintptr_t)64)
-+
-+#ifndef __aarch64__
-+#define ALIGN_MASK	(FLUSH_ALIGN - 1)
-+
-+#define CHUNK_SIZE	128 /* 16*8 */
-+#define CHUNK_SHIFT	7
-+#define CHUNK_MASK	(CHUNK_SIZE - 1)
-+
-+#define DWORD_SIZE	4
-+#define DWORD_SHIFT	2
-+#define DWORD_MASK	(DWORD_SIZE - 1)
-+
-+#define MOVNT_SIZE	16
-+#define MOVNT_MASK	(MOVNT_SIZE - 1)
-+#define MOVNT_SHIFT	4
-+
-+#define MOVNT_THRESHOLD	256
-+
-+static size_t Movnt_threshold = MOVNT_THRESHOLD;
-+#endif
-+
-+/*
-+ * pmem_has_hw_drain -- return whether or not HW drain was found
-+ *
-+ * Always false for x86: HW drain is done by HW with no SW involvement.
-+ */
-+int
-+pmem_has_hw_drain(void)
-+{
-+	LOG(3, NULL);
-+
-+	return 0;
-+}
-+
-+/*
-+ * predrain_fence_empty -- (internal) issue the pre-drain fence instruction
-+ */
-+static void
-+predrain_fence_empty(void)
-+{
-+	LOG(15, NULL);
-+	/* nothing to do (because CLFLUSH did it for us) */
-+}
-+
-+/*
-+ * predrain_memory_barrier -- (internal) issue the pre-drain fence instruction
-+ */
-+static void
-+predrain_memory_barrier(void)
-+{
-+	LOG(15, NULL);
-+#ifndef __aarch64__
-+	_mm_sfence();	/* ensure CLWB or CLFLUSHOPT completes */
-+#else
-+	arm_data_memory_barrier();
-+#endif
-+}
-+
-+/*
-+ * pmem_drain() calls through Func_predrain_fence to do the fence.  Although
-+ * initialized to predrain_fence_empty(), once the existence of the CLWB or
-+ * CLFLUSHOPT feature is confirmed by pmem_init() at library initialization
-+ * time, Func_predrain_fence is set to predrain_memory_barrier().  That's the
-+ * most common case on modern hardware that supports persistent memory.
-+ */
-+static void (*Func_predrain_fence)(void) = predrain_fence_empty;
-+
-+/*
-+ * pmem_drain -- wait for any PM stores to drain from HW buffers
-+ */
-+void
-+pmem_drain(void)
-+{
-+	LOG(15, NULL);
-+
-+	Func_predrain_fence();
-+}
-+
-+
-+#ifdef __aarch64__
-+/*
-+ * flush_dcache does similar to clwb using DC CVAC
-+ */
-+static void
-+flush_dcache(const void *addr, size_t len)
-+{
-+	LOG(15, "addr %p len %zu", addr, len);
-+
-+	uintptr_t uptr;
-+
-+	/*
-+	 * Loop through cache-line-size (typically 64B) aligned chunks
-+	 * covering the given range.
-+	 */
-+	for (uptr = (uintptr_t)addr & ~(FLUSH_ALIGN - 1);
-+		uptr < (uintptr_t)addr + len; uptr += FLUSH_ALIGN) {
-+		arm_clean_va_to_poc((char *)uptr);
-+	}
-+}
-+
-+#else
-+
-+/*
-+ * flush_dcache_invalidate -- (internal) flush the CPU cache, using clflush
-+ */
-+static void
-+flush_dcache_invalidate(const void *addr, size_t len)
-+{
-+	LOG(15, "addr %p len %zu", addr, len);
-+
-+	uintptr_t uptr;
-+
-+	/*
-+	 * Loop through cache-line-size (typically 64B) aligned chunks
-+	 * covering the given range.
-+	 */
-+	for (uptr = (uintptr_t)addr & ~(FLUSH_ALIGN - 1);
-+		uptr < (uintptr_t)addr + len; uptr += FLUSH_ALIGN) {
-+		_mm_clflush((char *)uptr);
-+	}
-+}
-+
-+/*
-+ * flush_dcache -- (internal) flush the CPU cache, using clwb
-+ */
-+static void
-+flush_dcache(const void *addr, size_t len)
-+{
-+	LOG(15, "addr %p len %zu", addr, len);
-+
-+	uintptr_t uptr;
-+
-+	/*
-+	 * Loop through cache-line-size (typically 64B) aligned chunks
-+	 * covering the given range.
-+	 */
-+	for (uptr = (uintptr_t)addr & ~(FLUSH_ALIGN - 1);
-+		uptr < (uintptr_t)addr + len; uptr += FLUSH_ALIGN) {
-+		_mm_clwb((char *)uptr);
-+	}
-+}
-+#endif
-+
-+/*
-+ * flush_dcache_invalidate_opt -- (internal) flush the CPU cache,
-+ * using clflushopt for X86 and arm_clean_and_invalidate_va_to_poc
-+ * for aarch64 (see arm_cacheops.h) {DC CIVAC}
-+ */
-+
-+#ifdef __aarch64__
-+static void
-+flush_dcache_invalidate_opt(const void *addr, size_t len)
-+{
-+	LOG(15, "addr %p len  %zu", addr, len);
-+
-+	uintptr_t uptr;
-+
-+	arm_data_memory_barrier();
-+	for (uptr = (uintptr_t)addr & ~(FLUSH_ALIGN - 1);
-+		uptr < (uintptr_t)addr + len; uptr += FLUSH_ALIGN) {
-+		arm_clean_and_invalidate_va_to_poc((char *)uptr);
-+	}
-+	arm_data_memory_barrier();
-+}
-+
-+#else
-+
-+static void
-+flush_dcache_invalidate_opt(const void *addr, size_t len)
-+{
-+	LOG(15, "addr %p len %zu", addr, len);
-+
-+	uintptr_t uptr;
-+
-+	/*
-+	 * Loop through cache-line-size (typically 64B) aligned chunks
-+	 * covering the given range.
-+	 */
-+	for (uptr = (uintptr_t)addr & ~(FLUSH_ALIGN - 1);
-+		uptr < (uintptr_t)addr + len; uptr += FLUSH_ALIGN) {
-+		_mm_clflushopt((char *)uptr);
-+	}
-+}
-+#endif
-+
-+/*
-+ * flush_empty -- (internal) do not flush the CPU cache
-+ */
-+static void
-+flush_empty(const void *addr, size_t len)
-+{
-+	LOG(15, "addr %p len %zu", addr, len);
-+
-+	/* NOP */
-+}
-+
-+/*
-+ * pmem_flush() calls through Func_flush to do the work.  Although
-+ * initialized to flush_dcache_invalidate(), once the existence of the
-+ * clflushopt feature is confirmed by pmem_init() at library
-+ * initialization time, Func_flush is set to flush_dcache_invalidate_opt().
-+ * That's the most common case on modern hardware that supports persistent
-+ * memory. In case of aarch64, there is no difference between clflush and
-+ * clflushopt so both refer to flush_data_clean_invalidate.
-+ */
-+#ifndef __aarch64__
-+static void (*Func_deep_flush)(const void *, size_t) = flush_dcache_invalidate;
-+static void (*Func_flush)(const void *, size_t) = flush_dcache_invalidate;
-+#else
-+static void (*Func_deep_flush)(const void *, size_t) =
-+						flush_dcache_invalidate_opt;
-+static void (*Func_flush)(const void *, size_t) =
-+						flush_dcache_invalidate_opt;
-+#endif
-+
-+/*
-+ * pmem_deep_flush -- flush processor cache for the given range
-+ * regardless of eADR support on platform
-+ */
-+void
-+pmem_deep_flush(const void *addr, size_t len)
-+{
-+	LOG(15, "addr %p len %zu", addr, len);
-+
-+	Func_deep_flush(addr, len);
-+}
-+
-+/*
-+ * pmem_flush -- flush processor cache for the given range
-+ */
-+void
-+pmem_flush(const void *addr, size_t len)
-+{
-+	LOG(15, "addr %p len %zu", addr, len);
-+
-+	Func_flush(addr, len);
-+}
-+
-+/*
-+ * pmem_persist -- make any cached changes to a range of pmem persistent
-+ */
-+void
-+pmem_persist(const void *addr, size_t len)
-+{
-+	LOG(15, "addr %p len %zu", addr, len);
-+
-+	pmem_flush(addr, len);
-+	pmem_drain();
-+}
-+
-+
-+
-+#define PMEM_FILE_ALL_FLAGS\
-+	(PMEM_FILE_CREATE|PMEM_FILE_EXCL|PMEM_FILE_SPARSE|PMEM_FILE_TMPFILE)
-+
-+#define PMEM_DAX_VALID_FLAGS\
-+	(PMEM_FILE_CREATE|PMEM_FILE_SPARSE)
-+
-+
-+/*
-+ * pmem_log_cpuinfo -- log the results of cpu dispatching decisions,
-+ * and verify them
-+ */
-+static void
-+pmem_log_cpuinfo(void)
-+{
-+	LOG(3, NULL);
-+
-+#ifndef __aarch64__
-+	if (Func_deep_flush == flush_dcache)
-+		LOG(3, "using clwb");
-+	else if (Func_deep_flush == flush_dcache_invalidate_opt)
-+		LOG(3, "using clflushopt");
-+	else if (Func_deep_flush == flush_dcache_invalidate)
-+		LOG(3, "using clflush");
-+	else
-+		FATAL("invalid deep flush function address");
-+
-+	if (Func_flush == flush_empty)
-+		LOG(3, "not flushing CPU cache");
-+	else if (Func_flush != Func_deep_flush)
-+		FATAL("invalid flush function address");
-+
-+#else
-+	if (Func_deep_flush == flush_dcache)
-+		LOG(3, "Using ARM invalidate");
-+	else if (Func_deep_flush == flush_dcache_invalidate_opt)
-+		LOG(3, "Synchronize VA to poc for ARM");
-+	else
-+		FATAL("invalid flush function address");
-+#endif
-+
-+
-+}
-+
-+/*
-+ * pmem_get_cpuinfo -- configure libpmem based on CPUID
-+ */
-+static void
-+pmem_get_cpuinfo(void)
-+{
-+	LOG(3, NULL);
-+
-+	if (is_cpu_clflush_present()) {
-+		// Func_is_pmem = is_pmem_detect;
-+		LOG(3, "clflush supported");
-+	}
-+
-+	if (is_cpu_clflushopt_present()) {
-+		LOG(3, "clflushopt supported");
-+
-+		char *e = os_getenv("PMEM_NO_CLFLUSHOPT");
-+		if (e && strcmp(e, "1") == 0)
-+			LOG(3, "PMEM_NO_CLFLUSHOPT forced no clflushopt");
-+		else {
-+			Func_deep_flush = flush_dcache_invalidate_opt;
-+			Func_predrain_fence = predrain_memory_barrier;
-+		}
-+	}
-+
-+	if (is_cpu_clwb_present()) {
-+		LOG(3, "clwb supported");
-+
-+		char *e = os_getenv("PMEM_NO_CLWB");
-+		if (e && strcmp(e, "1") == 0)
-+			LOG(3, "PMEM_NO_CLWB forced no clwb");
-+		else {
-+			Func_deep_flush = flush_dcache;
-+			Func_predrain_fence = predrain_memory_barrier;
-+		}
-+	}
-+}
-+
-+/*
-+ * pmem_init -- load-time initialization for pmem.c
-+ */
-+void
-+pmem_init(void)
-+{
-+	LOG(3, NULL);
-+
-+	pmem_get_cpuinfo();
-+
-+	Func_flush = Func_deep_flush;
-+
-+	char *e = os_getenv("PMEM_NO_FLUSH");
-+	if (e && strcmp(e, "1") == 0) {
-+		LOG(3, "forced not flushing CPU cache");
-+		Func_flush = flush_empty;
-+		Func_predrain_fence = predrain_memory_barrier;
-+	}
-+
-+	/*
-+	 * XXX - check if eADR is available
-+	 * replace with pmem_auto_flush()
-+	 */
-+	char *auto_flush = os_getenv("PMEM_NO_FLUSH");
-+	if (auto_flush && strcmp(auto_flush, "1") == 0) {
-+		LOG(3, "eADR is available");
-+		Func_flush = flush_empty;
-+		Func_predrain_fence = predrain_memory_barrier;
-+	}
-+
-+/*
-+ * non-temporal is currently not supported in ARM so defaulting to
-+ * memcpy_nodrain_normal
-+ */
-+#ifndef __aarch64__
-+	/*
-+	 * For testing, allow overriding the default threshold
-+	 * for using non-temporal stores in pmem_memcpy_*(), pmem_memmove_*()
-+	 * and pmem_memset_*().
-+	 * It has no effect if movnt is not supported or disabled.
-+	 */
-+	char *ptr = os_getenv("PMEM_MOVNT_THRESHOLD");
-+	if (ptr) {
-+		long long val = atoll(ptr);
-+
-+		if (val < 0)
-+			LOG(3, "Invalid PMEM_MOVNT_THRESHOLD");
-+		else {
-+			LOG(3, "PMEM_MOVNT_THRESHOLD set to %zu", (size_t)val);
-+			Movnt_threshold = (size_t)val;
-+		}
-+	}
-+
-+	ptr = os_getenv("PMEM_NO_MOVNT");
-+	if (ptr && strcmp(ptr, "1") == 0)
-+		LOG(3, "PMEM_NO_MOVNT forced no movnt");
-+	else {
-+		// Func_memmove_nodrain = memmove_nodrain_movnt;
-+		// Func_memset_nodrain = memset_nodrain_movnt;
-+	}
-+#endif
-+	pmem_log_cpuinfo();
-+
-+#if defined(_WIN32) && (NTDDI_VERSION >= NTDDI_WIN10_RS1)
-+	Func_qvmi = (PQVM)GetProcAddress(
-+			GetModuleHandle(TEXT("KernelBase.dll")),
-+			"QueryVirtualMemoryInformation");
-+#endif
-+}
-+
-+

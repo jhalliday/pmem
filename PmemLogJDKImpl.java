@@ -30,7 +30,7 @@ public class PmemLogJDKImpl implements PmemLog {
 
         FileChannelImpl fcImpl = (FileChannelImpl)fileChannel;
 
-        mappedByteBuffer = fcImpl.map(FileChannel.MapMode.READ_WRITE, 0, HEADER_BYTES+size, true);
+        mappedByteBuffer = fcImpl.map(FileChannel.MapMode.READ_WRITE_PERSISTENT, 0, HEADER_BYTES+size);
 
         if(isNew) {
             writeOffset = HEADER_BYTES;
